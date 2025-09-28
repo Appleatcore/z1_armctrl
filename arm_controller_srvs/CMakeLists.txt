@@ -60,6 +60,7 @@ add_service_files(
   BackToHome.srv
   CheckPoseInWorkspace.srv
   Plan.srv
+  JoyStickControl.srv
 )
 
 # # Generate actions in the 'action' folder

@@ -91,7 +91,7 @@ void rpyToRot(const Eigen::Ref<const Eigen::Vector3d> &rpy,
  */
 [[nodiscard]] inline Eigen::Matrix3d rpyToRot(
     const Eigen::Ref<const Eigen::Vector3d> &rpy) {
-  Eigen::Matrix3d rot;
+  Eigen::Matrix3d rot=Eigen::Matrix3d::Identity();
   rpyToRot(rpy, rot);
   return rot;
 };

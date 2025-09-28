@@ -10,4 +10,5 @@ int main(int argc, char **argv) {
   arm_controller::ArmController arm_controller(nh);
   arm_controller.launch();
   ros::waitForShutdown();
+  // ros::spin();
 }

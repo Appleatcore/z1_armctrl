@@ -5,7 +5,7 @@
     <arg name="z1robot_config_path" value="(find $(arg rname)_moveit_config)"/>
     <arg name="dollar" value="$"/>
     <arg name="UnitreeGripperYN" default="false"/>
-    <param name="z1robot_description" command="$(find xacro)/xacro --inorder '$(arg dollar)$(arg z1robot_path)/xacro/robot.xacro' UnitreeGripper:=$(arg UnitreeGripperYN)"/>
+    <!-- <param name="z1robot_description" command="$(find xacro)/xacro -inorder '$(arg dollar)$(arg z1robot_path)/xacro/robot.xacro' UnitreeGripper:=$(arg UnitreeGripperYN)"/> -->
 
     <node pkg="arm_controller" type="arm_controller_node" name="arm_controller_node" output="screen">
         <remap from="/joint_states" to="/$(arg topic_group)/joint_states"/>
@@ -13,8 +13,10 @@
         <remap from="/end_effector_pose" to="/$(arg topic_group)/end_effector_pose"/>
         <remap from="/execute_process" to="/$(arg topic_group)/execute_process"/>
         <remap from="/plan" to="/$(arg topic_group)/plan"/>
+        <remap from="/search_plan" to="/$(arg topic_group)/search_plan" />
         <remap from="/back_to_home" to="/$(arg topic_group)/back_to_home"/>
         <remap from="/check_pose_in_workspace" to="/$(arg topic_group)/check_pose_in_workspace"/>
+        <remap from="/joy_stick_control" to="/$(arg topic_group)/joy_stick_control" />
     </node>
 
     <!-- <node pkg="robot_state_publisher" type="robot_state_publisher" name="arm_state_publisher">

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10.2)
+cmake_minimum_required(VERSION 3.0.2)
 project(arm_controller)
 
 # # Compile as C++11, supported in ROS Kinetic and newer

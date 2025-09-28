@@ -1,0 +1,3 @@
+[submodule "thirdparty/z1_sdk"]
+	path = thirdparty/z1_sdk
+	url = https://github.com/unitreerobotics/z1_sdk

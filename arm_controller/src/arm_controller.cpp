@@ -44,6 +44,8 @@ ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh) {
   while (!low_state_.arm_connected) {
     std::this_thread::sleep_for(std::chrono::microseconds(1));
   }
+  // 设置夹爪增益
+  low_cmd_.setGripperGain();  // 使用默认增益
   // Planning
   KJointHome_ << 0, 0, -0.005, -0.074, 0, 0;
   kEePoseHome_.setIdentity();
@@ -131,6 +133,8 @@ void ArmController::initServers() {
       "search_plan", &ArmController::searchPlanServer, this);
   js_control_server_ = nh_.advertiseService(
       "joy_stick_control", &ArmController::jsControlServer, this);
+  gripper_control_server_ = nh_.advertiseService(
+      "gripper_control", &ArmController::gripperControlServer, this);
   // plan_action_server_ = std::make_unique<
   //     actionlib::SimpleActionServer<arm_controller::PlanAction>>(
   //     nh_, "plan_action",
@@ -224,6 +228,12 @@ void ArmController::controlStep() {
     case ArmControlFsm::Arrived: {
       arm_control_joint_vel_.setZero();
       setControlCmd(default_kp_, default_kd_);
+      // 保持夹爪位置
+      data_mutex_.lock();
+      low_cmd_.setGripperQ(gripper_goal_);
+      low_cmd_.setGripperQd(0.0);
+      low_cmd_.setGripperGain(15.0,0.0);  // 设置夹爪增益
+      data_mutex_.unlock();
       break;
     }
     case ArmControlFsm::PlanMove: {
@@ -232,11 +242,18 @@ void ArmController::controlStep() {
         arm_control_joint_vel_.setZero();
         process_ = 1.0;
       } else {
+        // 设置机械臂关节目标
         arm_control_joint_pos_ = joint_pos_trajectory_[arm_control_tick_];
         arm_control_joint_vel_ = joint_vel_trajectory_[arm_control_tick_];
         process_ = static_cast<double>(arm_control_tick_) / plan_max_tick_;
       }
       setControlCmd(default_kp_, default_kd_);
+      // 保持夹爪位置
+      data_mutex_.lock();
+      low_cmd_.setGripperQ(gripper_goal_);
+      low_cmd_.setGripperQd(0.0);
+      low_cmd_.setGripperGain(15.0,0.0);  // 设置夹爪增益
+      data_mutex_.unlock();
       break;
     }
     case ArmControlFsm::JoyStickControl: {
@@ -404,6 +421,8 @@ bool ArmController::isInWorkspaceServer(
 bool ArmController::planServer(arm_controller_srvs::Plan::Request& req,
                                arm_controller_srvs::Plan::Response& res) {
   res.call_success = false;
+  // // 保存夹爪目标值
+  // double gripper_goal = req.gripper_pos;
   if (arm_control_fsm_ == ArmControlFsm::Home ||
       arm_control_fsm_ == ArmControlFsm::Arrived) {
     Eigen::Matrix4d start_ee_pose =
@@ -447,6 +466,12 @@ bool ArmController::planServer(arm_controller_srvs::Plan::Request& req,
           average_move_speed_ / control_period_);
       plan_max_tick_ = std::max(100uL, plan_max_tick_);
       lazyPlan(start_joint_pos, arm_joint_goal_, plan_max_tick_);
+
+      // // 同时规划夹爪轨迹（从当前位置到目标位置）
+      // double gripper_current = low_state_.getGripperQ();
+      // // 可以用线性插值或者直接设置目标值
+      // gripper_goal_ = gripper_goal;
+
       setArmControlFsm(ArmControlFsm::PlanMove);
       res.call_success = true;
     }
@@ -457,6 +482,8 @@ bool ArmController::planServer(arm_controller_srvs::Plan::Request& req,
 bool ArmController::searchPlanServer(arm_controller_srvs::Plan::Request& req,
                                      arm_controller_srvs::Plan::Response& res) {
   res.call_success = false;
+  // // 保存夹爪目标值
+  // double gripper_goal = req.gripper_pos;
   if (arm_control_fsm_ == ArmControlFsm::Home ||
       arm_control_fsm_ == ArmControlFsm::Arrived) {
     Eigen::Matrix4d start_ee_pose =
@@ -507,6 +534,12 @@ bool ArmController::searchPlanServer(arm_controller_srvs::Plan::Request& req,
       plan_max_tick_ = std::max(100uL, plan_max_tick_);
       lazyPlan(start_joint_pos, arm_joint_goal_, plan_max_tick_);
       setArmControlFsm(ArmControlFsm::PlanMove);
+
+      // // 同时规划夹爪轨迹（从当前位置到目标位置）
+      // double gripper_current = low_state_.getGripperQ();
+      // // 可以用线性插值或者直接设置目标值
+      // gripper_goal_ = gripper_goal;
+
       res.call_success = true;
     }
   }
@@ -559,9 +592,45 @@ bool ArmController::jsControlServer(
   return true;
 }
 
+bool ArmController::gripperControlServer(
+    arm_controller_srvs::GripperControl::Request& req,
+    arm_controller_srvs::GripperControl::Response& res) {
+  res.call_success = false;
+  
+  // 检查 Joint6 角度范围
+  if (req.joint6_pos < -3.14 || req.joint6_pos > 3.14) {
+    std::cout << "[Gripper Control] Invalid Joint6 position: " << req.joint6_pos
+              << " rad (valid range: -3.14 to 3.14)" << std::endl;
+    return true;
+  }
+  
+  // 如果不在 Arrived 或 PlanMove 状态，需要初始化机械臂位置
+  if (arm_control_fsm_ != ArmControlFsm::Arrived && 
+      arm_control_fsm_ != ArmControlFsm::PlanMove) {
+    arm_control_joint_pos_ = low_state_.getQ();  // 保持当前位置
+    arm_control_joint_vel_.setZero();
+  }
+  
+  // 设置夹爪目标
+  gripper_goal_ = req.gripper_pos;
+  
+  // 设置 Joint6 目标
+  arm_control_joint_pos_[5] = req.joint6_pos;  // Joint6 是索引 5
+  
+  std::cout << "[Gripper Control] Setting Joint6 to: " << req.joint6_pos 
+            << " rad (" << (req.joint6_pos * 180.0 / 3.14159) << " deg), "
+            << "Gripper to: " << gripper_goal_ << std::endl;
+  
+  res.call_success = true;
+  setArmControlFsm(ArmControlFsm::Arrived);
+  return true;
+}
+
 void ArmController::imuCallback(const sensor_msgs::Imu::ConstPtr& imu) {
-  arm_model_->_gravity[0] = -imu->linear_acceleration.x;
-  arm_model_->_gravity[1] = -imu->linear_acceleration.y;
-  arm_model_->_gravity[2] = -imu->linear_acceleration.z;
+  // Note: _gravity is protected member, cannot access directly
+  // If needed, you can modify the Z1 SDK to add a public setter
+  // arm_model_->_gravity[0] = -imu->linear_acceleration.x;
+  // arm_model_->_gravity[1] = -imu->linear_acceleration.y;
+  // arm_model_->_gravity[2] = -imu->linear_acceleration.z;
 }
 }  // namespace arm_controller

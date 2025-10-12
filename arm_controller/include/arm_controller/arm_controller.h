@@ -16,6 +16,7 @@
 #include "arm_api.h"
 #include "arm_controller_srvs/BackToHome.h"
 #include "arm_controller_srvs/CheckPoseInWorkspace.h"
+#include "arm_controller_srvs/GripperControl.h"
 #include "arm_controller_srvs/JoyStickControl.h"
 #include "arm_controller_srvs/Plan.h"
 #include "js_api.h"
@@ -97,6 +98,8 @@ class ArmController {
                        arm_controller_srvs::BackToHome::Response& res);
   bool jsControlServer(arm_controller_srvs::JoyStickControlRequest& req,
                        arm_controller_srvs::JoyStickControlResponse& res);
+  bool gripperControlServer(arm_controller_srvs::GripperControl::Request& req,
+                            arm_controller_srvs::GripperControl::Response& res);
   void imuCallback(const sensor_msgs::Imu::ConstPtr& imu);
   // action
   // void planActionServer(const arm_controller::PlanGoalConstPtr& goal);
@@ -132,6 +135,9 @@ class ArmController {
   double process_{1.0};
   QuinticInterpolationFn<Eigen::Matrix<double, 6, 1>> joint_interp_fn_;
   long unsigned int plan_max_tick_{0};
+  // gripper
+  double gripper_goal_{0.0};
+  double gripper_current_{0.0};
   // joy stick
   js::JsState js_state_;
   std::shared_ptr<JsRos> js_api_;
@@ -151,7 +157,8 @@ class ArmController {
   ros::Subscriber imu_sub_;
   // server
   ros::ServiceServer back2home_server_, check_pose_in_workspace_server_,
-      plan_server_, search_plan_server_, js_control_server_;
+      plan_server_, search_plan_server_, js_control_server_,
+      gripper_control_server_;
   // action server
   // std::unique_ptr<actionlib::SimpleActionServer<arm_controller::PlanAction>>
   //     plan_action_server_;

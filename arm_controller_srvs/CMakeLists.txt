@@ -61,6 +61,7 @@ add_service_files(
   CheckPoseInWorkspace.srv
   Plan.srv
   JoyStickControl.srv
+  GripperControl.srv
 )
 
 # # Generate actions in the 'action' folder

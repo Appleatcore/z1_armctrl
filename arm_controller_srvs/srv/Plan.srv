@@ -1,3 +1,4 @@
 geometry_msgs/Pose target_pose
+# float64 gripper_pos  # 0.0(张开) 到 -0.85(闭合)
 ---
 bool call_success

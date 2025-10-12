@@ -84,6 +84,104 @@ void ArmController::launch() {
   control_thread_ = std::thread([this]() {
     Rate rate(static_cast<int>(1 / control_period_));
     std::cout << "Manipulator controller started" << std::endl;
+
+    //test - 从 ROS 参数服务器读取配置
+    double line_x, line_y, line_z;
+    double center_x, center_y, center_z;
+    double rotation_angle_deg, sample_start, sample_end;
+    double origin_direction_x, origin_direction_y, origin_direction_z;
+    double rotation_axis_x, rotation_axis_y, rotation_axis_z;
+    int num_samples, num_rotations;
+    double angle_step_deg;
+    
+    nh_.param("test/line_point_x", line_x, 1.0);
+    nh_.param("test/line_point_y", line_y, 0.0);
+    nh_.param("test/line_point_z", line_z, 0.15);
+    nh_.param("test/origin_direction_x", origin_direction_x, 1.0);
+    nh_.param("test/origin_direction_y", origin_direction_y, 0.0);
+    nh_.param("test/origin_direction_z", origin_direction_z, 0.0);
+    nh_.param("test/rotation_center_x", center_x, 1.0);
+    nh_.param("test/rotation_center_y", center_y, 0.0);
+    nh_.param("test/rotation_center_z", center_z, 0.15);
+    nh_.param("test/rotation_axis_x", rotation_axis_x, 0.0);
+    nh_.param("test/rotation_axis_y", rotation_axis_y, 0.0);
+    nh_.param("test/rotation_axis_z", rotation_axis_z, 1.0);
+    nh_.param("test/rotation_angle_deg", rotation_angle_deg, 45.0);
+    nh_.param("test/sample_start", sample_start, -1.0);
+    nh_.param("test/sample_end", sample_end, 0.0);
+    nh_.param("test/num_samples", num_samples, 10);
+    nh_.param("test/num_rotations", num_rotations, 1);
+    nh_.param("test/angle_step_deg", angle_step_deg, 45.0);
+    
+    // 创建原始直线
+    Line3D original_line;
+    original_line.point = Eigen::Vector3d(line_x, line_y, line_z);
+    original_line.direction = Eigen::Vector3d(origin_direction_x, origin_direction_y, origin_direction_z).normalized();
+
+    // 定义旋转参数
+    Eigen::Vector3d rotation_center(center_x, center_y, center_z);
+    Eigen::Vector3d rotation_axis(rotation_axis_x, rotation_axis_y, rotation_axis_z);  // 绕 Z 轴旋转
+    double rotation_angle_rad = rotation_angle_deg * M_PI / 180.0;
+
+    // 方法: 批量旋转并采样
+    //原直线
+    std::cout<<"------------MID LINE------------"<<std::endl;
+    double angle_step_rad = 0.0;
+    auto results = generateRotatedLinesWithSamples(
+        original_line,
+        rotation_center,
+        rotation_axis,
+        num_rotations,
+        angle_step_rad,
+        sample_start, sample_end,
+        num_samples
+    );
+
+    //正转angle_step_deg度
+    std::cout<<"------------HALF LINE------------"<<std::endl;
+    double angle_step_rad_1 = angle_step_deg * M_PI / 180.0;
+    auto results_1 = generateRotatedLinesWithSamples(
+        original_line,
+        rotation_center,
+        rotation_axis,
+        num_rotations,
+        angle_step_rad_1,
+        sample_start, sample_end,
+        num_samples
+    );
+
+
+    //反转angle_step_deg度
+    std::cout<<"------------HALF2 LINE------------"<<std::endl;
+    double angle_step_rad_2 = (360.0-angle_step_deg) * M_PI / 180.0;
+    auto results_2 = generateRotatedLinesWithSamples(
+        original_line,
+        rotation_center,
+        rotation_axis,
+        num_rotations,
+        angle_step_rad_2,
+        sample_start, sample_end,
+        num_samples
+    );
+
+    //平移distance_1
+    std::cout<<"------------OUT LINE------------"<<std::endl;
+    double distance_1 = 0.3;
+    auto results_3 = translateLine(
+        original_line, Eigen::Vector3d(0.0, 1.0, 0.0), 
+        distance_1, 
+        sample_start, sample_end, 
+        num_samples);
+
+    //平移distance_2
+    std::cout<<"------------OUT2 LINE------------"<<std::endl;
+    double distance_2 = -0.3;
+    auto results_4 = translateLine(
+        original_line, Eigen::Vector3d(0.0, 1.0, 0.0), 
+        distance_2, 
+        sample_start, sample_end, 
+        num_samples);
+    
     // auto start_time = std::chrono::system_clock::now();
     while (control_state_) {
       // auto end_time = std::chrono::system_clock::now();
@@ -546,6 +644,37 @@ bool ArmController::searchPlanServer(arm_controller_srvs::Plan::Request& req,
   return true;
 }
 
+
+bool ArmController::IsPlanServer(arm_controller_srvs::Plan::Request& req,
+                                 arm_controller_srvs::Plan::Response& res) {
+  res.call_success = false;
+  
+  if (arm_control_fsm_ == ArmControlFsm::Home ||
+      arm_control_fsm_ == ArmControlFsm::Arrived) {
+    Eigen::Matrix4d start_ee_pose =
+        arm_model_->forwardKinematics(low_state_.getQ());
+    Eigen::Matrix<double, 6, 1> start_joint_pos = low_state_.getQ();
+    Eigen::Matrix4d camera_target_pose, target_pose;
+    Eigen::Matrix<double, 6, 1> target_joint_pos;
+    bool find_ik{false};
+    
+    arm_controller::geometryMsgsPose2Pose(req.target_pose, camera_target_pose);
+    target_pose = camera_target_pose;
+    target_pose.block<3, 1>(0, 3) =
+        camera_target_pose.block<3, 1>(0, 3) -
+        camera_target_pose.block<3, 3>(0, 0) * kCameraPosBias_E_;
+    
+    find_ik = arm_model_->inverseKinematics(target_pose, start_joint_pos,
+                                            target_joint_pos, true);
+    
+    if (arm_motor_safe_ && find_ik) {
+      res.call_success = true;
+    }
+  }
+  return true;
+}
+
+
 bool ArmController::back2HomeServer(
     arm_controller_srvs::BackToHome::Request& req,
     arm_controller_srvs::BackToHome::Response& res) {
@@ -633,4 +762,300 @@ void ArmController::imuCallback(const sensor_msgs::Imu::ConstPtr& imu) {
   // arm_model_->_gravity[1] = -imu->linear_acceleration.y;
   // arm_model_->_gravity[2] = -imu->linear_acceleration.z;
 }
+
+// ============================================================================
+// Line3D 结构体成员函数实现
+// ============================================================================
+
+std::vector<Eigen::Vector3d> Line3D::samplePoints(double t_start, double t_end,
+                                                    int num_samples) const {
+  std::vector<Eigen::Vector3d> samples;
+  if (num_samples <= 0) {
+    return samples;
+  }
+  
+  if (num_samples == 1) {
+    samples.push_back(point + t_start * direction);
+    return samples;
+  }
+  
+  double dt = (t_end - t_start) / (num_samples - 1);
+  for (int i = 0; i < num_samples; ++i) {
+    double t = t_start + i * dt;
+    samples.push_back(point + t * direction);
+  }
+  return samples;
+}
+
+// ============================================================================
+// ArmController 直线旋转相关函数实现
+// ============================================================================
+
+Line3D ArmController::rotateLine(const Line3D& line,
+                                  const Eigen::Vector3d& rotation_center,
+                                  const Eigen::Vector3d& rotation_axis,
+                                  double angle_rad) const {
+  Line3D rotated_line;
+  
+  // 使用 Eigen 的 AngleAxis 创建旋转矩阵
+  Eigen::AngleAxisd rotation(angle_rad, rotation_axis.normalized());
+  Eigen::Matrix3d R = rotation.toRotationMatrix();
+  
+  // 旋转直线上的点（相对于旋转中心）
+  Eigen::Vector3d relative_point = line.point - rotation_center;
+  rotated_line.point = R * relative_point + rotation_center;
+  
+  // 旋转方向向量
+  rotated_line.direction = (R * line.direction).normalized();
+  
+  return rotated_line;
+}
+
+// ============================================================================
+// ArmController 直线平移相关函数实现
+// ============================================================================
+
+Line3D ArmController::translateLine(const Line3D& line,
+                                  const Eigen::Vector3d& direction,
+                                  double distance,
+                                  double t_start,
+                                  double t_end,
+                                  int num_samples) {
+  Line3D translated_line;
+  
+  std::cout << "[Line Translation] Generating " << num_samples 
+  << " translated lines in direction: " << direction.transpose()
+  << " with distance: " << distance << " m"
+  << std::endl;
+  // 计算平移向量：方向单位化 * 距离
+  Eigen::Vector3d translation = direction.normalized() * distance;
+  
+  // 平移直线上的点
+  translated_line.point = line.point + translation;
+  
+  // 保持方向向量不变
+  translated_line.direction = line.direction;
+
+  // 在旋转后的直线上采样点
+  std::vector<Eigen::Vector3d> sampled_points = 
+  translated_line.samplePoints(t_start, t_end, num_samples);
+
+  // 创建 Pose 并赋值采样点
+  std::vector<geometry_msgs::Pose> sample_poses;
+  for (size_t i = 0; i < sampled_points.size(); ++i) {
+  geometry_msgs::Pose pose;
+  pose.position.x = sampled_points[i].x();
+  pose.position.y = sampled_points[i].y();
+  pose.position.z = sampled_points[i].z();
+  pose.orientation.w = 1.0;  // 默认姿态
+  pose.orientation.x = 0.0;
+  pose.orientation.y = 0.0;
+  pose.orientation.z = 0.0;
+
+
+  // 检查是否有逆运动学解
+  arm_controller_srvs::Plan::Request req;
+  arm_controller_srvs::Plan::Response res;
+  req.target_pose = pose;
+  if((IsPlanServer(req, res)) && res.call_success){
+    std::cout << "  Point[" << i << "]: (" << pose.position.x << ", " 
+              << pose.position.y << ", " << pose.position.z << ") is OK" << std::endl;
+    sample_poses.push_back(pose);
+  }
+  }
+  // std::cout << "Total " << sample_poses.size() << " poses created." << std::endl;
+
+  // 保存结果
+  // results.push_back(std::make_pair(translated_line, sampled_points));
+
+  // 测试相机姿态计算
+  // std::cout << "[Camera Orientation Test]" << std::endl;
+  double test_pitch, test_roll, test_yaw;
+  if(calculateCameraOrientation(translated_line.direction, test_pitch, test_roll, test_yaw, 0.055)) {
+    std::cout << "translateline,distance:"<<distance<<": SUCCESS\n" << std::endl;
+  }
+  
+  return translated_line;
+}
+
+// ============================================================================
+// ArmController 相机姿态计算相关函数实现
+// ============================================================================
+
+bool ArmController::calculateCameraOrientation(const Eigen::Vector3d& camera_direction,
+                                               double& pitch,
+                                               double& roll,
+                                               double& yaw,
+                                               double radius) const {
+  // 归一化输入方向
+  Eigen::Vector3d d = camera_direction.normalized();
+  
+  // =============================================================================
+  // 暴力搜索方法：遍历所有 pitch 和 roll 组合
+  // 
+  // 优点：
+  // 1. 简单直观，不需要复杂的数学推导
+  // 2. 一定能找到最佳解（如果存在）
+  // 3. 可以直接验证结果
+  // =============================================================================
+  
+  // 相机相对末端的固定位置偏移（从 URDF）
+  const Eigen::Vector3d CAM_POS_OFFSET(0.0389, 0, -0.0389);
+  const double CAM_PITCH_OFFSET = 0.7854;  // 45° 相机固定姿态偏移
+  
+  // 步骤 1: 计算目标坐标（单位向量 × 半径）
+  Eigen::Vector3d target_pos = d * radius;
+  
+  // 步骤 2: 暴力搜索最佳 pitch 和 roll
+  double best_pitch = 0.0, best_roll = 0.0;
+  double min_error = 1e10;
+  
+  // 搜索精度：1度
+  const double step = 1.0 * M_PI / 180.0;
+  const double pitch_min = -M_PI / 2.0;
+  const double pitch_max = M_PI / 2.0;
+  const double roll_min = -M_PI / 2.0;
+  const double roll_max = M_PI / 2.0;
+  
+  // 遍历 pitch
+  for (double p = pitch_min; p <= pitch_max; p += step) {
+    double cp = std::cos(p), sp = std::sin(p);
+    
+    // 遍历 roll
+    for (double r = roll_min; r <= roll_max; r += step) {
+      double cr = std::cos(r), sr = std::sin(r);
+      
+      // 计算相机位置：末端旋转后，相机的位置
+      // R_end = Ry(pitch) * Rx(roll)
+      // cam_pos = R_end * CAM_POS_OFFSET
+      
+      // Ry(p) * Rx(r) = [cp    sp*sr   sp*cr ]
+      //                 [0     cr     -sr   ]
+      //                 [-sp   cp*sr   cp*cr]
+      
+      Eigen::Vector3d cam_pos(
+        cp * CAM_POS_OFFSET.x() + sp*sr * CAM_POS_OFFSET.y() + sp*cr * CAM_POS_OFFSET.z(),
+        0  * CAM_POS_OFFSET.x() + cr    * CAM_POS_OFFSET.y() - sr    * CAM_POS_OFFSET.z(),
+        -sp * CAM_POS_OFFSET.x() + cp*sr * CAM_POS_OFFSET.y() + cp*cr * CAM_POS_OFFSET.z()
+      );
+      
+      // 计算误差
+      double error = (cam_pos - target_pos).norm();
+      
+      // 更新最佳解
+      if (error < min_error) {
+        min_error = error;
+        best_pitch = p;
+        best_roll = r;
+      }
+    }
+  }
+  
+  pitch = best_pitch;
+  roll = best_roll;
+  yaw = 0.0;  // yaw 不可控，设为 0
+  
+  // 验证：计算实际相机位置
+  double cp = std::cos(pitch), sp = std::sin(pitch);
+  double cr = std::cos(roll), sr = std::sin(roll);
+  
+  Eigen::Vector3d actual_cam_pos(
+    cp * CAM_POS_OFFSET.x() + sp*sr * CAM_POS_OFFSET.y() + sp*cr * CAM_POS_OFFSET.z(),
+    0  * CAM_POS_OFFSET.x() + cr    * CAM_POS_OFFSET.y() - sr    * CAM_POS_OFFSET.z(),
+    -sp * CAM_POS_OFFSET.x() + cp*sr * CAM_POS_OFFSET.y() + cp*cr * CAM_POS_OFFSET.z()
+  );
+  
+  double final_error = (actual_cam_pos - target_pos).norm();
+  
+  // 输出结果
+  // std::cout << "[Camera Position - Brute Force Search]" << std::endl;
+  // std::cout << "  Target position:     " << target_pos.transpose() << std::endl;
+  // std::cout << "  Calculated position: " << actual_cam_pos.transpose() << std::endl;
+  // std::cout << "  Error: " << final_error << " m" << std::endl;
+  std::cout << "  => End-effector Pitch: " << (pitch * 180.0 / M_PI) << " deg" <<"=="<< pitch<< std::endl;
+  std::cout << "  => End-effector Roll:  " << (roll * 180.0 / M_PI) << " deg" <<"=="<< roll<< std::endl;
+  
+  if (final_error > 0.01) {  // 1cm 误差
+    std::cout << "\n  [Warning] Large error! Target may not be achievable." << std::endl;
+    return false;
+  }
+  
+  return true;
+}
+
+
+std::vector<std::pair<Line3D, std::vector<Eigen::Vector3d>>>
+ArmController::generateRotatedLinesWithSamples(
+    const Line3D& line,
+    const Eigen::Vector3d& rotation_center,
+    const Eigen::Vector3d& rotation_axis,
+    int num_rotations,
+    double angle_step,
+    double t_start,
+    double t_end,
+    int num_samples) {
+  
+  std::vector<std::pair<Line3D, std::vector<Eigen::Vector3d>>> results;
+  
+  std::cout << "[Line Rotation] Generating " << num_rotations 
+            << " rotated lines around axis: " << rotation_axis.transpose()
+            << " with angle step: " << (angle_step * 180.0 / M_PI) << " deg"
+            << std::endl;
+  
+  for (int i = 1; i <= num_rotations; i++) {
+    double angle = i * angle_step;
+    
+    // 旋转直线
+    Line3D rotated_line = rotateLine(line, rotation_center, rotation_axis, angle);
+    
+    // 在旋转后的直线上采样点
+    std::vector<Eigen::Vector3d> sampled_points = 
+        rotated_line.samplePoints(t_start, t_end, num_samples);
+    
+    // 创建 Pose 并赋值采样点
+    std::vector<geometry_msgs::Pose> sample_poses;
+    for (size_t i = 0; i < sampled_points.size(); ++i) {
+      geometry_msgs::Pose pose;
+      pose.position.x = sampled_points[i].x();
+      pose.position.y = sampled_points[i].y();
+      pose.position.z = sampled_points[i].z();
+      pose.orientation.w = 1.0;  // 默认姿态
+      pose.orientation.x = 0.0;
+      pose.orientation.y = 0.0;
+      pose.orientation.z = 0.0;
+
+
+      // 检查是否有逆运动学解
+      arm_controller_srvs::Plan::Request req;
+      arm_controller_srvs::Plan::Response res;
+      req.target_pose = pose;
+      if((IsPlanServer(req, res)) && res.call_success){
+        std::cout << "  Point[" << i << "]: (" << pose.position.x << ", " 
+                  << pose.position.y << ", " << pose.position.z << ") is OK" << std::endl;
+        sample_poses.push_back(pose);
+      }
+    }
+    // std::cout << "Total " << sample_poses.size() << " poses created." << std::endl;
+
+    // 保存结果
+    results.push_back(std::make_pair(rotated_line, sampled_points));
+    
+    // 输出调试信息
+    std::cout << "  [" << i << "] Angle: " << (angle * 180.0 / M_PI) << " deg, "
+              << "Line point: " << rotated_line.point.transpose() << ", "
+              << "\nDirection: " << rotated_line.direction.transpose() << ", "
+              << "\nSamples: " << sampled_points.size() << std::endl;
+    std::cout << std::endl;
+
+    // 测试相机姿态计算
+    // std::cout << "\n[Camera Orientation Test]" << std::endl ;
+    double test_pitch, test_roll, test_yaw;
+    if(calculateCameraOrientation(rotated_line.direction, test_pitch, test_roll, test_yaw, 0.055)) {
+      std::cout << "rotated_line,angle_step:"<<angle_step<<": SUCCESS\n" << std::endl;
+    }
+  }
+  
+  return results;
+}
+
 }  // namespace arm_controller

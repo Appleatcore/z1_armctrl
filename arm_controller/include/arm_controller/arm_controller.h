@@ -27,6 +27,16 @@
 
 namespace arm_controller {
 
+// 3D直线的参数化表示
+struct Line3D {
+  Eigen::Vector3d point;      // 直线上的一个点
+  Eigen::Vector3d direction;  // 方向向量（单位向量）
+  
+  // 在直线上采样点
+  std::vector<Eigen::Vector3d> samplePoints(double t_start, double t_end, 
+                                             int num_samples) const;
+};
+
 enum class ArmControlFsm {
   Invalid,
   Home,
@@ -92,6 +102,8 @@ class ArmController {
       arm_controller_srvs::CheckPoseInWorkspace::Response& res);
   bool planServer(arm_controller_srvs::Plan::Request& req,
                   arm_controller_srvs::Plan::Response& res);
+  bool IsPlanServer(arm_controller_srvs::Plan::Request& req,
+                    arm_controller_srvs::Plan::Response& res);
   bool searchPlanServer(arm_controller_srvs::Plan::Request& req,
                         arm_controller_srvs::Plan::Response& res);
   bool back2HomeServer(arm_controller_srvs::BackToHome::Request& req,
@@ -101,6 +113,70 @@ class ArmController {
   bool gripperControlServer(arm_controller_srvs::GripperControl::Request& req,
                             arm_controller_srvs::GripperControl::Response& res);
   void imuCallback(const sensor_msgs::Imu::ConstPtr& imu);
+  
+  /**
+   * @brief 计算直线绕旋转轴旋转后的解析式
+   * @param line 原始直线
+   * @param rotation_center 旋转中心点
+   * @param rotation_axis 旋转轴方向（单位向量）
+   * @param angle_rad 旋转角度（弧度）
+   * @return 旋转后的直线
+   */
+  Line3D rotateLine(const Line3D& line,
+                    const Eigen::Vector3d& rotation_center,
+                    const Eigen::Vector3d& rotation_axis,
+                    double angle_rad) const;
+  
+  /**
+   * @brief 计算直线沿指定方向平移指定距离后的解析式
+   * @param line 原始直线
+   * @param direction 平移方向向量
+   * @param distance 平移距离
+   * @return 平移后的直线
+   */
+  Line3D translateLine(const Line3D& line,
+                       const Eigen::Vector3d& direction,
+                       double distance,
+                       double t_start,
+                       double t_end,
+                       int num_samples);
+  
+  /**
+   * @brief 计算让相机朝向指定方向所需的末端姿态角度（自动计算最优roll角）
+   * @param camera_direction 期望的相机朝向（单位向量）
+   * @param pitch 输出参数：末端需要的pitch角（弧度）
+   * @param roll 输出参数：末端需要的roll角（弧度，自动计算）
+   * @param yaw 输出参数：参考yaw角（需通过机械臂位置实现）
+   * @param radius 目标距离（米）
+   * @return 是否成功计算
+   */
+  bool calculateCameraOrientation(const Eigen::Vector3d& camera_direction,
+                                  double& pitch,
+                                  double& roll,
+                                  double& yaw,
+                                  double radius = 1.0) const;
+  
+  /**
+   * @brief 生成多个旋转角度的直线并在每条直线上采样点
+   * @param line 原始直线
+   * @param rotation_center 旋转中心点
+   * @param rotation_axis 旋转轴方向
+   * @param num_rotations 旋转的数量
+   * @param angle_step 每次旋转的角度步长（弧度）
+   * @param t_start 采样参数起始值
+   * @param t_end 采样参数结束值
+   * @param num_samples 每条直线上的采样点数
+   * @return 所有旋转直线及其采样点的集合
+   */
+  std::vector<std::pair<Line3D, std::vector<Eigen::Vector3d>>> 
+  generateRotatedLinesWithSamples(const Line3D& line,
+                                   const Eigen::Vector3d& rotation_center,
+                                   const Eigen::Vector3d& rotation_axis,
+                                   int num_rotations,
+                                   double angle_step,
+                                   double t_start,
+                                   double t_end,
+                                   int num_samples) ;
   // action
   // void planActionServer(const arm_controller::PlanGoalConstPtr& goal);
 
@@ -157,8 +233,8 @@ class ArmController {
   ros::Subscriber imu_sub_;
   // server
   ros::ServiceServer back2home_server_, check_pose_in_workspace_server_,
-      plan_server_, search_plan_server_, js_control_server_,
-      gripper_control_server_;
+      plan_server_, search_plan_server_, rotation_search_plan_server_,
+      js_control_server_, gripper_control_server_;
   // action server
   // std::unique_ptr<actionlib::SimpleActionServer<arm_controller::PlanAction>>
   //     plan_action_server_;

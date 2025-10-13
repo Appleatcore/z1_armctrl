@@ -88,6 +88,7 @@ void ArmController::launch() {
     //test - 从 ROS 参数服务器读取配置
     double line_x, line_y, line_z;
     double center_x, center_y, center_z;
+    double line_pitch, line_yaw, line_roll;
     double rotation_angle_deg, sample_start, sample_end;
     double origin_direction_x, origin_direction_y, origin_direction_z;
     double rotation_axis_x, rotation_axis_y, rotation_axis_z;
@@ -97,15 +98,18 @@ void ArmController::launch() {
     nh_.param("test/line_point_x", line_x, 1.0);
     nh_.param("test/line_point_y", line_y, 0.0);
     nh_.param("test/line_point_z", line_z, 0.15);
+    nh_.param("test/line_point_pitch", line_pitch, 0.0);
+    nh_.param("test/line_point_yaw", line_yaw, 0.0);
+    nh_.param("test/line_point_roll", line_roll, 0.0);
     nh_.param("test/origin_direction_x", origin_direction_x, 1.0);
     nh_.param("test/origin_direction_y", origin_direction_y, 0.0);
     nh_.param("test/origin_direction_z", origin_direction_z, 0.0);
-    nh_.param("test/rotation_center_x", center_x, 1.0);
-    nh_.param("test/rotation_center_y", center_y, 0.0);
-    nh_.param("test/rotation_center_z", center_z, 0.15);
-    nh_.param("test/rotation_axis_x", rotation_axis_x, 0.0);
+    nh_.param("test/rotation_center_x", center_x, line_x);
+    nh_.param("test/rotation_center_y", center_y, line_y);
+    nh_.param("test/rotation_center_z", center_z, line_z);
+    nh_.param("test/rotation_axis_x", rotation_axis_x, 1.0);
     nh_.param("test/rotation_axis_y", rotation_axis_y, 0.0);
-    nh_.param("test/rotation_axis_z", rotation_axis_z, 1.0);
+    nh_.param("test/rotation_axis_z", rotation_axis_z, 0.0);
     nh_.param("test/rotation_angle_deg", rotation_angle_deg, 45.0);
     nh_.param("test/sample_start", sample_start, -1.0);
     nh_.param("test/sample_end", sample_end, 0.0);
@@ -113,6 +117,18 @@ void ArmController::launch() {
     nh_.param("test/num_rotations", num_rotations, 1);
     nh_.param("test/angle_step_deg", angle_step_deg, 45.0);
     
+    // 计算方向向量(假设沿着姿态的X轴方向)
+    origin_direction_x = cos(line_yaw) * cos(line_pitch);
+    origin_direction_y = sin(line_yaw) * cos(line_pitch);
+    origin_direction_z = sin(line_pitch);
+    std::cout << "Origin direction: " << origin_direction_x << ", " << origin_direction_y << ", " << origin_direction_z << std::endl;
+
+    //将origin_direction在XOZ平面内旋转90度得到rotation_axis
+    rotation_axis_x = -origin_direction_z;
+    rotation_axis_y = origin_direction_y;
+    rotation_axis_z = origin_direction_x;
+    std::cout << "Rotation axis: " << rotation_axis_x << ", " << rotation_axis_y << ", " << rotation_axis_z << std::endl;
+
     // 创建原始直线
     Line3D original_line;
     original_line.point = Eigen::Vector3d(line_x, line_y, line_z);
@@ -913,7 +929,7 @@ bool ArmController::calculateCameraOrientation(const Eigen::Vector3d& camera_dir
   // 搜索精度：1度
   const double step = 1.0 * M_PI / 180.0;
   const double pitch_min = -M_PI / 2.0;
-  const double pitch_max = M_PI / 2.0;
+  const double pitch_max = 0.0;
   const double roll_min = -M_PI / 2.0;
   const double roll_max = M_PI / 2.0;
   

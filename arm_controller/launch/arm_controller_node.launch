@@ -19,16 +19,19 @@
         <remap from="/joy_stick_control" to="/$(arg topic_group)/joy_stick_control" />
         
         <!-- Line rotation test parameters -->
-        <param name="test/line_point_x" value="1.0" />
+        <param name="test/line_point_x" value="0.8" />
         <param name="test/line_point_y" value="0.0" />
         <param name="test/line_point_z" value="0.15" />
+        <param name="test/line_point_pitch" value="-0.7854" />
+        <param name="test/line_point_yaw" value="0.0" />
+        <param name="test/line_point_roll" value="0.0" />
         <param name="test/origin_direction_x" value="1.0" />
         <param name="test/origin_direction_y" value="0.0" />
-        <param name="test/origin_direction_z" value="0.0" />
-        <param name="test/rotation_center_x" value="1.0" />
+        <param name="test/origin_direction_z" value="-1.0" />
+        <!-- <param name="test/rotation_center_x" value="0.8" />
         <param name="test/rotation_center_y" value="0.0" />
-        <param name="test/rotation_center_z" value="0.15" />
-        <param name="test/rotation_axis_x" value="0.0" />
+        <param name="test/rotation_center_z" value="0.15" /> -->
+        <param name="test/rotation_axis_x" value="1.0" />
         <param name="test/rotation_axis_y" value="0.0" />
         <param name="test/rotation_axis_z" value="1.0" />
         <param name="test/rotation_angle_deg" value="45.0" />

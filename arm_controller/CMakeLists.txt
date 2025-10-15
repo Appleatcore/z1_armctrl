@@ -174,6 +174,17 @@ add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}_gencpp)
 add_executable(${PROJECT_NAME}_node src/main.cpp)
 target_link_libraries(${PROJECT_NAME}_node PRIVATE ${PROJECT_NAME})
 
+# Calculate node (standalone line calculation)
+add_executable(calculate_node src/calculate_node.cpp)
+target_link_libraries(calculate_node ${catkin_LIBRARIES})
+add_dependencies(calculate_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
+# PoseParamUpdater node
+add_executable(pose_param_updater_node src/pose_param_updater_node.cpp src/pose_param_updater.cpp)
+target_include_directories(pose_param_updater_node PRIVATE include)
+target_link_libraries(pose_param_updater_node PRIVATE ${catkin_LIBRARIES})
+add_dependencies(pose_param_updater_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
 add_subdirectory(src/test)
 
 # add_executable(check_pose_in_workspace_server src/check_pose_in_workspace_server.cpp)

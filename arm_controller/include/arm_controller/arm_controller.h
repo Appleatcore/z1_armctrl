@@ -19,6 +19,7 @@
 #include "arm_controller_srvs/GripperControl.h"
 #include "arm_controller_srvs/JoyStickControl.h"
 #include "arm_controller_srvs/Plan.h"
+#include "arm_controller_srvs/PlanToDefault.h"
 #include "js_api.h"
 #include "js_dev.h"
 // #include "arm_planner.h"
@@ -108,6 +109,8 @@ class ArmController {
                         arm_controller_srvs::Plan::Response& res);
   bool back2HomeServer(arm_controller_srvs::BackToHome::Request& req,
                        arm_controller_srvs::BackToHome::Response& res);
+  bool planToDefaultServer(arm_controller_srvs::PlanToDefault::Request& req,
+                           arm_controller_srvs::PlanToDefault::Response& res);
   bool jsControlServer(arm_controller_srvs::JoyStickControlRequest& req,
                        arm_controller_srvs::JoyStickControlResponse& res);
   bool gripperControlServer(arm_controller_srvs::GripperControl::Request& req,
@@ -234,7 +237,7 @@ class ArmController {
   // server
   ros::ServiceServer back2home_server_, check_pose_in_workspace_server_,
       plan_server_, search_plan_server_, rotation_search_plan_server_,
-      js_control_server_, gripper_control_server_;
+      plan_to_default_server_, js_control_server_, gripper_control_server_;
   // action server
   // std::unique_ptr<actionlib::SimpleActionServer<arm_controller::PlanAction>>
   //     plan_action_server_;

@@ -1,0 +1,54 @@
+<launch>
+    <!-- 
+        集成启动文件: calculate_node + pose_param_updater
+        
+        功能:
+        1. 启动calculate_node进行直线计算
+        2. 启动pose_param_updater监听/target_pose话题
+        3. 当收到新的pose时,自动更新calculate_node的参数
+        
+        使用方法:
+        1. 启动: roslaunch arm_controller calculate_with_updater.launch
+        2. 发布pose: rostopic pub /target_pose geometry_msgs/PoseStamped "header:
+          seq: 0
+          stamp: {secs: 0, nsecs: 0}
+          frame_id: 'link00'
+        pose:
+          position: {x: 0.6, y: 0.0, z: 0.2}
+          orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}"
+        3. calculate_node会自动使用新的参数重新计算
+    -->
+    
+    <!-- 参数定义 -->
+    <arg name="pose_topic" default="/target_pose" />
+    
+    <!-- 1. 启动pose_param_updater节点 -->
+    <node pkg="arm_controller" type="pose_param_updater_node" name="pose_param_updater" output="screen">
+        <param name="pose_topic" value="$(arg pose_topic)" />
+        <param name="param_x" value="/calculate_node/test/line_point_x" />
+        <param name="param_y" value="/calculate_node/test/line_point_y" />
+        <param name="param_z" value="/calculate_node/test/line_point_z" />
+    </node>
+    
+    <!-- 2. 启动calculate_node -->
+    <node pkg="arm_controller" type="calculate_node" name="calculate_node" output="screen">
+        <!-- Line parameters (初始值) -->
+        <param name="test/line_point_x" value="0.8" />
+        <param name="test/line_point_y" value="0.0" />
+        <param name="test/line_point_z" value="0.15" />
+        <param name="test/line_point_pitch" value="-0.7854" />  <!-- -45 degrees -->
+        <param name="test/line_point_yaw" value="0.0" />
+        <param name="test/line_point_roll" value="0.0" />
+        
+        <!-- Sampling parameters -->
+        <param name="test/sample_start" value="-1.0" />
+        <param name="test/sample_end" value="0.0" />
+        <param name="test/num_samples" value="10" />
+        
+        <!-- Rotation parameters -->
+        <param name="test/num_rotations" value="1" />
+        <param name="test/angle_step_deg" value="45.0" />
+    </node>
+    
+    <node pkg="rqt_reconfigure" type="rqt_reconfigure" name="rqt_reconfigure" />
+</launch>

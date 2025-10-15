@@ -1,0 +1,21 @@
+<launch>
+    <!-- Line calculation node -->
+    <node pkg="arm_controller" type="calculate_node" name="calculate_node" output="screen">
+        <!-- Line parameters -->
+        <param name="test/line_point_x" value="0.8" />
+        <param name="test/line_point_y" value="0.0" />
+        <param name="test/line_point_z" value="0.15" />
+        <param name="test/line_point_pitch" value="-0.7854" />  <!-- -45 degrees -->
+        <param name="test/line_point_yaw" value="0.0" />
+        <param name="test/line_point_roll" value="0.0" />
+        
+        <!-- Sampling parameters -->
+        <param name="test/sample_start" value="-1.0" />
+        <param name="test/sample_end" value="0.0" />
+        <param name="test/num_samples" value="10" />
+        
+        <!-- Rotation parameters -->
+        <param name="test/num_rotations" value="1" />
+        <param name="test/angle_step_deg" value="45.0" />
+    </node>
+</launch>

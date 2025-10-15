@@ -60,6 +60,7 @@ add_service_files(
   BackToHome.srv
   CheckPoseInWorkspace.srv
   Plan.srv
+  PlanToDefault.srv
   JoyStickControl.srv
   GripperControl.srv
 )

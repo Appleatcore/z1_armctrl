@@ -1,0 +1,26 @@
+<launch>
+    <!-- 
+        PoseParamUpdater节点启动文件
+        功能: 订阅PoseStamped话题并更新ROS参数
+        
+        参数说明:
+        - pose_topic: 要订阅的PoseStamped话题名称 (默认: /target_pose)
+        - param_x: 存储x坐标的参数名称 (默认: /test/line_point_x)
+        - param_y: 存储y坐标的参数名称 (默认: /test/line_point_y)
+        - param_z: 存储z坐标的参数名称 (默认: /test/line_point_z)
+    -->
+    
+    <!-- 参数定义 -->
+    <arg name="pose_topic" default="/target_pose" />
+    <arg name="param_x" default="/test/line_point_x" />
+    <arg name="param_y" default="/test/line_point_y" />
+    <arg name="param_z" default="/test/line_point_z" />
+    
+    <!-- 启动PoseParamUpdater节点 -->
+    <node pkg="arm_controller" type="pose_param_updater_node" name="pose_param_updater" output="screen">
+        <param name="pose_topic" value="$(arg pose_topic)" />
+        <param name="param_x" value="$(arg param_x)" />
+        <param name="param_y" value="$(arg param_y)" />
+        <param name="param_z" value="$(arg param_z)" />
+    </node>
+</launch>

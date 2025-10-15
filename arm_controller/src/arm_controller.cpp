@@ -241,6 +241,8 @@ void ArmController::initServers() {
   plan_server_ = nh_.advertiseService("plan", &ArmController::planServer, this);
   back2home_server_ = nh_.advertiseService(
       "back_to_home", &ArmController::back2HomeServer, this);
+  plan_to_default_server_ = nh_.advertiseService(
+      "plan_to_default", &ArmController::planToDefaultServer, this);
   check_pose_in_workspace_server_ = nh_.advertiseService(
       "check_pose_in_workspace", &ArmController::isInWorkspaceServer, this);
   search_plan_server_ = nh_.advertiseService(
@@ -714,6 +716,68 @@ bool ArmController::back2HomeServer(
     lazyPlan(start_joint_pos, KJointHome_, plan_max_tick_);
     setArmControlFsm(ArmControlFsm::Back2Home);
     res.call_success = true;
+  }
+  return true;
+}
+
+bool ArmController::planToDefaultServer(
+    arm_controller_srvs::PlanToDefault::Request& req,
+    arm_controller_srvs::PlanToDefault::Response& res) {
+  res.call_success = false;
+  
+  // 构造一个默认的target_pose
+  geometry_msgs::Pose default_target_pose;
+  
+  // 默认姿态(单位四元数)
+  default_target_pose.position.x=0.6;
+  default_target_pose.position.y=0.0;
+  default_target_pose.position.z=0.1;
+  default_target_pose.orientation.x = 0.0;
+  default_target_pose.orientation.y = 0.0;
+  default_target_pose.orientation.z = 0.0;
+  default_target_pose.orientation.w = 1.0;
+  
+  ROS_INFO("PlanToDefault: Point (%.3f, %.3f, %.3f)", 
+           default_target_pose.position.x, 
+           default_target_pose.position.y, 
+           default_target_pose.position.z);
+
+  if (arm_control_fsm_ == ArmControlFsm::Home ||
+      arm_control_fsm_ == ArmControlFsm::Arrived) {
+    Eigen::Matrix4d start_ee_pose =
+        arm_model_->forwardKinematics(low_state_.getQ());
+    Eigen::Matrix<double, 6, 1> start_joint_pos = low_state_.getQ();
+    Eigen::Matrix4d camera_target_pose, target_pose;
+    Eigen::Matrix<double, 6, 1> target_joint_pos;
+    bool find_ik{false};
+    arm_controller::geometryMsgsPose2Pose(default_target_pose, camera_target_pose);
+    target_pose = camera_target_pose;
+    target_pose.block<3, 1>(0, 3) =
+        camera_target_pose.block<3, 1>(0, 3) -
+        camera_target_pose.block<3, 3>(0, 0) * kCameraPosBias_E_;
+    find_ik = arm_model_->inverseKinematics(target_pose, start_joint_pos,
+                                            target_joint_pos, true);
+    if (arm_motor_safe_ && find_ik) {
+      if ((target_joint_pos - start_joint_pos).norm() <= 0.042) {
+        res.call_success = true;
+        return true;
+      }
+      ee_pose_goal_ = target_pose;
+      arm_joint_goal_ = target_joint_pos;
+      plan_max_tick_ = static_cast<long unsigned int>(
+          (ee_pose_goal_ - start_ee_pose).block<3, 1>(0, 3).norm() /
+          average_move_speed_ / control_period_);
+      plan_max_tick_ = std::max(100uL, plan_max_tick_);
+      lazyPlan(start_joint_pos, arm_joint_goal_, plan_max_tick_);
+      setArmControlFsm(ArmControlFsm::PlanMove);
+
+      // // 同时规划夹爪轨迹（从当前位置到目标位置）
+      // double gripper_current = low_state_.getGripperQ();
+      // // 可以用线性插值或者直接设置目标值
+      // gripper_goal_ = gripper_goal;
+
+      res.call_success = true;
+    }
   }
   return true;
 }

@@ -3,6 +3,7 @@
 
 #include <ros/ros.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <tf/transform_listener.h>
 #include <string>
 
 namespace arm_controller {
@@ -35,6 +36,8 @@ private:
 
     ros::NodeHandle nh_;
     ros::Subscriber pose_sub_;
+    ros::Publisher transformed_pose_pub_;  // 发布转换后的 pose
+    tf::TransformListener tf_listener_;
     
     // 参数名称
     std::string param_x_;
@@ -43,6 +46,11 @@ private:
     
     // 话题名称
     std::string pose_topic_;
+    
+    // TF参数
+    std::string target_frame_;  // 目标坐标系
+    bool enable_tf_transform_;  // 是否启用TF变换
+    double tf_timeout_;         // TF等待超时
 };
 
 } // namespace arm_controller

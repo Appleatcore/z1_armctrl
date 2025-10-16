@@ -283,19 +283,29 @@ public:
   void paramCheckCallback(const ros::TimerEvent&) {
     // 检查参数是否变化
     double new_x, new_y, new_z;
+    double new_pitch, new_roll, new_yaw;
+    
     nh_.param("test/line_point_x", new_x, last_line_x_);
     nh_.param("test/line_point_y", new_y, last_line_y_);
     nh_.param("test/line_point_z", new_z, last_line_z_);
+    nh_.param("test/line_point_pitch", new_pitch, last_line_pitch_);
+    nh_.param("test/line_point_roll", new_roll, last_line_roll_);
+    nh_.param("test/line_point_yaw", new_yaw, last_line_yaw_);
     
-    if (new_x != last_line_x_ || new_y != last_line_y_ || new_z != last_line_z_) {
+    if (new_x != last_line_x_ || new_y != last_line_y_ || new_z != last_line_z_ ||
+        new_pitch != last_line_pitch_ || new_roll != last_line_roll_ || new_yaw != last_line_yaw_) {
       ROS_INFO("\n========================================");
       ROS_INFO("Parameters changed! Recalculating...");
       ROS_INFO("New position: (%.3f, %.3f, %.3f)", new_x, new_y, new_z);
+      ROS_INFO("New orientation: pitch=%.3f, roll=%.3f, yaw=%.3f", new_pitch, new_roll, new_yaw);
       ROS_INFO("========================================\n");
       
       last_line_x_ = new_x;
       last_line_y_ = new_y;
       last_line_z_ = new_z;
+      last_line_pitch_ = new_pitch;
+      last_line_roll_ = new_roll;
+      last_line_yaw_ = new_yaw;
       
       // 重新计算
       run();
@@ -306,6 +316,7 @@ public:
     // 从参数服务器读取配置
     double line_x, line_y, line_z;
     double line_pitch, line_yaw, line_roll;
+    double line_pitch_link00, line_yaw_link00, line_roll_link00;
     double sample_start, sample_end;
     int num_samples, num_rotations;
     double angle_step_deg;
@@ -313,15 +324,20 @@ public:
     nh_.param("test/line_point_x", line_x, 0.8);
     nh_.param("test/line_point_y", line_y, 0.0);
     nh_.param("test/line_point_z", line_z, 0.15);
-    nh_.param("test/line_point_pitch", line_pitch, -0.7854);
-    nh_.param("test/line_point_yaw", line_yaw, 0.0);
-    nh_.param("test/line_point_roll", line_roll, 0.0);
+    nh_.param("test/line_point_pitch", line_pitch_link00, -0.7854);
+    nh_.param("test/line_point_yaw", line_yaw_link00, 0.0);
+    nh_.param("test/line_point_roll", line_roll_link00, 0.0);
     nh_.param("test/sample_start", sample_start, -1.0);
     nh_.param("test/sample_end", sample_end, 0.0);
     nh_.param("test/num_samples", num_samples, 10);
     nh_.param("test/num_rotations", num_rotations, 1);
     nh_.param("test/angle_step_deg", angle_step_deg, 45.0);
     
+    //将line_pitch, line_yaw, line_roll转换为笛卡尔坐标系
+    line_pitch = -line_pitch_link00;
+    line_yaw = line_yaw_link00;
+    line_roll = line_roll_link00-1.5708;
+    std::cout << "Line direction: " << line_pitch << ", " << line_yaw << ", " << line_roll << std::endl;
     // 计算方向向量
     double origin_direction_x = cos(line_yaw) * cos(line_pitch);
     double origin_direction_y = sin(line_yaw) * cos(line_pitch);
@@ -336,6 +352,18 @@ public:
     double rotation_axis_z = origin_direction_x;
     ROS_INFO("Rotation axis: (%.3f, %.3f, %.3f)", rotation_axis_x, rotation_axis_y, rotation_axis_z);
     
+    // 计算平移轴：通过 pitch、yaw、roll 旋转 (0, 1, 0) 向量
+    // 使用 Eigen 的 AngleAxis 构建旋转矩阵
+    Eigen::Matrix3d R_yaw = Eigen::AngleAxisd(line_yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    Eigen::Matrix3d R_pitch = Eigen::AngleAxisd(line_pitch, Eigen::Vector3d::UnitY()).toRotationMatrix();
+    Eigen::Matrix3d R_roll = Eigen::AngleAxisd(line_roll, Eigen::Vector3d::UnitX()).toRotationMatrix();
+    // 组合旋转矩阵：R = Rz(yaw) * Ry(pitch) * Rx(roll)
+    Eigen::Matrix3d R_total = R_yaw * R_pitch * R_roll;
+    // 对 (0, 1, 0) 向量进行旋转
+    Eigen::Vector3d original_y_axis(0.0, 1.0, 0.0);
+    Eigen::Vector3d translation_axis_vec = R_total * original_y_axis;   
+    std::cout << "Translation axis: " << translation_axis_vec[0] << ", " << translation_axis_vec[1] << ", " << translation_axis_vec[2] << std::endl;
+
     // 创建原始直线
     Line3D original_line;
     original_line.point = Eigen::Vector3d(line_x, line_y, line_z);
@@ -366,7 +394,7 @@ public:
     
     // 平移
     ROS_INFO("\n============ OUT LINE ============");
-    Line3D translated_line_1 = translateLine(original_line, Eigen::Vector3d(0.0, 1.0, 0.0), 0.3);
+    Line3D translated_line_1 = translateLine(original_line, translation_axis_vec, 0.3);
     auto samples_1 = translated_line_1.samplePoints(sample_start, sample_end, num_samples);
     ROS_INFO("Translated line (+0.3m in Y): Point (%.3f, %.3f, %.3f), Samples: %d",
              translated_line_1.point.x(), translated_line_1.point.y(), translated_line_1.point.z(),
@@ -381,7 +409,7 @@ public:
     }
     
     ROS_INFO("\n============ OUT2 LINE ============");
-    Line3D translated_line_2 = translateLine(original_line, Eigen::Vector3d(0.0, 1.0, 0.0), -0.3);
+    Line3D translated_line_2 = translateLine(original_line, translation_axis_vec, -0.3);
     auto samples_2 = translated_line_2.samplePoints(sample_start, sample_end, num_samples);
     ROS_INFO("Translated line (-0.3m in Y): Point (%.3f, %.3f, %.3f), Samples: %d",
              translated_line_2.point.x(), translated_line_2.point.y(), translated_line_2.point.z(),
@@ -409,6 +437,9 @@ public:
     nh_.param("test/line_point_x", last_line_x_, 0.8);
     nh_.param("test/line_point_y", last_line_y_, 0.0);
     nh_.param("test/line_point_z", last_line_z_, 0.15);
+    nh_.param("test/line_point_pitch", last_line_pitch_, 0.7854);
+    nh_.param("test/line_point_roll", last_line_roll_, 1.5708);
+    nh_.param("test/line_point_yaw", last_line_yaw_, 0.0);
     
     // 创建定时器(每秒检查一次)
     param_check_timer_ = nh_.createTimer(
@@ -430,6 +461,9 @@ private:
   double last_line_x_;
   double last_line_y_;
   double last_line_z_;
+  double last_line_pitch_;
+  double last_line_roll_;
+  double last_line_yaw_;
 };
 
 int main(int argc, char** argv) {

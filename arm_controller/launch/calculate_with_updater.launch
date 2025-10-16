@@ -20,14 +20,19 @@
     -->
     
     <!-- 参数定义 -->
-    <arg name="pose_topic" default="/target_pose" />
+    <arg name="pose_topic" default="/foundationpose/pose" />
+    <arg name="target_frame" default="link00" />
+    <arg name="enable_tf_transform" default="true" />
+    <arg name="tf_timeout" default="3.0" />
     
     <!-- 1. 启动pose_param_updater节点 -->
     <node pkg="arm_controller" type="pose_param_updater_node" name="pose_param_updater" output="screen">
         <param name="pose_topic" value="$(arg pose_topic)" />
-        <param name="param_x" value="/calculate_node/test/line_point_x" />
-        <param name="param_y" value="/calculate_node/test/line_point_y" />
-        <param name="param_z" value="/calculate_node/test/line_point_z" />
+        
+        <!-- TF变换参数 -->
+        <param name="target_frame" value="$(arg target_frame)" />
+        <param name="enable_tf_transform" value="$(arg enable_tf_transform)" />
+        <param name="tf_timeout" value="$(arg tf_timeout)" />
     </node>
     
     <!-- 2. 启动calculate_node -->
@@ -36,9 +41,9 @@
         <param name="test/line_point_x" value="0.8" />
         <param name="test/line_point_y" value="0.0" />
         <param name="test/line_point_z" value="0.15" />
-        <param name="test/line_point_pitch" value="-0.7854" />  <!-- -45 degrees -->
+        <param name="test/line_point_pitch" value="0.7854" />  <!-- -45 degrees -->
         <param name="test/line_point_yaw" value="0.0" />
-        <param name="test/line_point_roll" value="0.0" />
+        <param name="test/line_point_roll" value="1.5708" />
         
         <!-- Sampling parameters -->
         <param name="test/sample_start" value="-1.0" />
@@ -50,5 +55,5 @@
         <param name="test/angle_step_deg" value="45.0" />
     </node>
     
-    <node pkg="rqt_reconfigure" type="rqt_reconfigure" name="rqt_reconfigure" />
+    <!-- <node pkg="rqt_reconfigure" type="rqt_reconfigure" name="rqt_reconfigure" /> -->
 </launch>

@@ -88,28 +88,21 @@ void ArmController::launch() {
     //test - 从 ROS 参数服务器读取配置
     double line_x, line_y, line_z;
     double center_x, center_y, center_z;
+    double line_pitch_link00, line_yaw_link00, line_roll_link00;
     double line_pitch, line_yaw, line_roll;
     double rotation_angle_deg, sample_start, sample_end;
     double origin_direction_x, origin_direction_y, origin_direction_z;
     double rotation_axis_x, rotation_axis_y, rotation_axis_z;
+    // double translation_axis_x, translation_axis_y, translation_axis_z;
     int num_samples, num_rotations;
     double angle_step_deg;
     
     nh_.param("test/line_point_x", line_x, 1.0);
     nh_.param("test/line_point_y", line_y, 0.0);
     nh_.param("test/line_point_z", line_z, 0.15);
-    nh_.param("test/line_point_pitch", line_pitch, 0.0);
-    nh_.param("test/line_point_yaw", line_yaw, 0.0);
-    nh_.param("test/line_point_roll", line_roll, 0.0);
-    nh_.param("test/origin_direction_x", origin_direction_x, 1.0);
-    nh_.param("test/origin_direction_y", origin_direction_y, 0.0);
-    nh_.param("test/origin_direction_z", origin_direction_z, 0.0);
-    nh_.param("test/rotation_center_x", center_x, line_x);
-    nh_.param("test/rotation_center_y", center_y, line_y);
-    nh_.param("test/rotation_center_z", center_z, line_z);
-    nh_.param("test/rotation_axis_x", rotation_axis_x, 1.0);
-    nh_.param("test/rotation_axis_y", rotation_axis_y, 0.0);
-    nh_.param("test/rotation_axis_z", rotation_axis_z, 0.0);
+    nh_.param("test/line_point_pitch", line_pitch_link00, 0.0);
+    nh_.param("test/line_point_yaw", line_yaw_link00, 0.0);
+    nh_.param("test/line_point_roll", line_roll_link00, 0.0);
     nh_.param("test/rotation_angle_deg", rotation_angle_deg, 45.0);
     nh_.param("test/sample_start", sample_start, -1.0);
     nh_.param("test/sample_end", sample_end, 0.0);
@@ -117,6 +110,11 @@ void ArmController::launch() {
     nh_.param("test/num_rotations", num_rotations, 1);
     nh_.param("test/angle_step_deg", angle_step_deg, 45.0);
     
+    //将line_pitch, line_yaw, line_roll转换为笛卡尔坐标系
+    line_pitch = -line_pitch_link00;
+    line_yaw = line_yaw_link00;
+    line_roll = line_roll_link00-1.5708;
+    std::cout << "Line direction: " << line_pitch << ", " << line_yaw << ", " << line_roll << std::endl;
     // 计算方向向量(假设沿着姿态的X轴方向)
     origin_direction_x = cos(line_yaw) * cos(line_pitch);
     origin_direction_y = sin(line_yaw) * cos(line_pitch);
@@ -128,6 +126,18 @@ void ArmController::launch() {
     rotation_axis_y = origin_direction_y;
     rotation_axis_z = origin_direction_x;
     std::cout << "Rotation axis: " << rotation_axis_x << ", " << rotation_axis_y << ", " << rotation_axis_z << std::endl;
+
+    // 计算平移轴：通过 pitch、yaw、roll 旋转 (0, 1, 0) 向量
+    // 使用 Eigen 的 AngleAxis 构建旋转矩阵
+    Eigen::Matrix3d R_yaw = Eigen::AngleAxisd(line_yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    Eigen::Matrix3d R_pitch = Eigen::AngleAxisd(line_pitch, Eigen::Vector3d::UnitY()).toRotationMatrix();
+    Eigen::Matrix3d R_roll = Eigen::AngleAxisd(line_roll, Eigen::Vector3d::UnitX()).toRotationMatrix();
+    // 组合旋转矩阵：R = Rz(yaw) * Ry(pitch) * Rx(roll)
+    Eigen::Matrix3d R_total = R_yaw * R_pitch * R_roll;
+    // 对 (0, 1, 0) 向量进行旋转
+    Eigen::Vector3d original_y_axis(0.0, 1.0, 0.0);
+    Eigen::Vector3d translation_axis_vec = R_total * original_y_axis;   
+    std::cout << "Translation axis: " << translation_axis_vec[0] << ", " << translation_axis_vec[1] << ", " << translation_axis_vec[2] << std::endl;
 
     // 创建原始直线
     Line3D original_line;
@@ -184,7 +194,7 @@ void ArmController::launch() {
     std::cout<<"------------OUT LINE------------"<<std::endl;
     double distance_1 = 0.3;
     auto results_3 = translateLine(
-        original_line, Eigen::Vector3d(0.0, 1.0, 0.0), 
+        original_line, translation_axis_vec, 
         distance_1, 
         sample_start, sample_end, 
         num_samples);
@@ -193,7 +203,7 @@ void ArmController::launch() {
     std::cout<<"------------OUT2 LINE------------"<<std::endl;
     double distance_2 = -0.3;
     auto results_4 = translateLine(
-        original_line, Eigen::Vector3d(0.0, 1.0, 0.0), 
+        original_line, translation_axis_vec, 
         distance_2, 
         sample_start, sample_end, 
         num_samples);

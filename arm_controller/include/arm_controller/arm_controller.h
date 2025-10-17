@@ -12,6 +12,7 @@
 #include <std_msgs/Bool.h>
 #include <std_msgs/Float64.h>
 #include <tf/transform_datatypes.h>
+#include <tf/transform_broadcaster.h>
 // #include <shared_mutex>
 #include <algorithm>
 #include <cmath>
@@ -297,9 +298,18 @@ class ArmController {
   // publisher and subscriber
   ros::Publisher ee_pose_pub_;
   ros::Publisher process_pub_;
+  ros::Publisher center_pub_;
   ros::Publisher arm_joint_states_pub_;
   ros::Publisher arm_cmd_joint_states_pub_;
   ros::Publisher target_poses_pub_;  // 发布目标点位供 RViz 可视化 (PoseArray)
+  ros::Publisher poses_out1_pub_;    // 发布 OUT1 可达点
+  ros::Publisher poses_out2_pub_;    // 发布 OUT2 可达点
+  ros::Publisher poses_mid_pub_;     // 发布 MID 可达点
+  ros::Publisher poses_half1_pub_;   // 发布 HALF1 可达点
+  ros::Publisher poses_half2_pub_;   // 发布 HALF2 可达点
+  ros::Publisher poses_mid_all_pub_; // 发布 MID 所有采样点（包括可达和不可达）
+  ros::Publisher transformed_input_pub_; // 发布变换后的输入姿态
+  tf::TransformBroadcaster tf_broadcaster_; // TF 广播器，用于发布坐标变换
   ros::Subscriber imu_sub_;
   ros::Subscriber execute_process_sub_;  // 订阅执行控制信号
   // server

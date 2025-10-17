@@ -243,8 +243,23 @@ void ArmController::initSubsAndPubs() {
   ee_pose_pub_ =
       nh_.advertise<geometry_msgs::PoseStamped>("/end_effector_pose", 1);
   process_pub_ = nh_.advertise<std_msgs::Float64>("/execute_process", 1);
+  center_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/arm_controller/center_point", 1);
   target_poses_pub_ = 
       nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/target_poses", 1);
+  poses_out1_pub_ = 
+      nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/poses_out1", 1);
+  poses_out2_pub_ = 
+      nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/poses_out2", 1);
+  poses_mid_pub_ = 
+      nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/poses_mid", 1);
+  poses_half1_pub_ = 
+      nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/poses_half1", 1);
+  poses_half2_pub_ = 
+      nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/poses_half2", 1);
+  poses_mid_all_pub_ = 
+      nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/poses_mid_all", 1);
+  transformed_input_pub_ = 
+      nh_.advertise<geometry_msgs::PoseStamped>("/arm_controller/transformed_input_pose", 1);
   imu_sub_ =
       nh_.subscribe("/aliengo/imu", 1, &ArmController::imuCallback, this);
 }
@@ -863,6 +878,7 @@ bool ArmController::planToFivePointServer(
   double line_x, line_y, line_z;
   double center_x, center_y, center_z;
   double line_pitch_link00, line_yaw_link00, line_roll_link00;
+  double line_pitch_link01, line_yaw_link01, line_roll_link01;
   double line_pitch, line_yaw, line_roll;
   double rotation_angle_deg, sample_start, sample_end;
   double origin_direction_x, origin_direction_y, origin_direction_z;
@@ -877,12 +893,54 @@ bool ArmController::planToFivePointServer(
   line_z = req.target_pose.pose.position.z;
   
   // 将四元数转换为 roll, pitch, yaw
-  tf::Quaternion quat(
+  // 先读取传入的四元数
+  tf::Quaternion quat_input(
     req.target_pose.pose.orientation.x,
     req.target_pose.pose.orientation.y,
     req.target_pose.pose.orientation.z,
     req.target_pose.pose.orientation.w
   );
+  
+  // 当前变换后的状态：原 X → 现 Z，原 Y → 现 X，原 Z → 现 Y
+  // 需要逆变换恢复到原始状态
+  
+  // 逆变换：先绕Y轴逆时针旋转90度
+  tf::Quaternion rot_y_inv;
+  rot_y_inv.setRotation(tf::Vector3(0, 1, 0), M_PI / 2.0);  // 逆时针 90度 = π/2
+  
+  // 逆变换：再绕X轴逆时针旋转90度
+  tf::Quaternion rot_x_inv;
+  rot_x_inv.setRotation(tf::Vector3(1, 0, 0), M_PI / 2.0);  // 逆时针 90度 = π/2
+  
+  // 额外变换：绕Y轴旋转180度
+  tf::Quaternion rot_y_180;
+  rot_y_180.setRotation(tf::Vector3(0, 1, 0), M_PI);  // 180度 = π
+  
+  // 应用变换：先应用逆变换，再绕Y轴旋转180度
+  tf::Quaternion quat = quat_input * rot_y_inv * rot_x_inv * rot_y_180;
+  
+  // 发布变换后的姿态
+  geometry_msgs::PoseStamped transformed_pose_msg;
+  transformed_pose_msg.header.frame_id = "link00";
+  transformed_pose_msg.header.stamp = ros::Time::now();
+  transformed_pose_msg.pose.position.x = line_x;
+  transformed_pose_msg.pose.position.y = line_y;
+  transformed_pose_msg.pose.position.z = line_z;
+  transformed_pose_msg.pose.orientation.w = quat.w();
+  transformed_pose_msg.pose.orientation.x = quat.x();
+  transformed_pose_msg.pose.orientation.y = quat.y();
+  transformed_pose_msg.pose.orientation.z = quat.z();
+  transformed_input_pub_.publish(transformed_pose_msg);
+  
+  // 通过 TF 广播变换后的坐标系
+  tf::Transform transform;
+  transform.setOrigin(tf::Vector3(line_x, line_y, line_z));
+  transform.setRotation(quat);
+  tf_broadcaster_.sendTransform(
+    tf::StampedTransform(transform, ros::Time::now(), "link00", "transformed_input_frame")
+  );
+  
+  ROS_INFO("[PlanToFivePoint] Published transformed input pose and TF frame 'transformed_input_frame'");
   
   tf::Matrix3x3 mat(quat);
   mat.getRPY(line_roll_link00, line_pitch_link00, line_yaw_link00);
@@ -904,10 +962,24 @@ bool ArmController::planToFivePointServer(
   center_y = line_y;
   center_z = line_z;
 
+  // line_pitch_link00 = line_pitch_link00;
+  // line_yaw_link00 = line_yaw_link00-1.5708;
+  // line_roll_link00 = line_roll_link00+0.7854;
   //将line_pitch, line_yaw, line_roll转换为笛卡尔坐标系
-  line_pitch = -line_pitch_link00;
+  line_pitch = line_pitch_link00;
   line_yaw = line_yaw_link00;
-  line_roll = line_roll_link00-1.5708;
+  line_roll = line_roll_link00;
+  // line_pitch = -line_pitch_link00;
+  // line_yaw = line_yaw_link00;
+  // line_roll = line_roll_link00-1.5708
+  // line_pitch_link01 = line_roll_link00;
+  // line_yaw_link01 = line_yaw_link00;
+  // line_roll_link01 = -line_pitch_link00;
+
+
+  // line_pitch = -line_pitch_link01;
+  // line_yaw = line_yaw_link01;
+  // line_roll = line_roll_link01-1.5708;
   std::cout << "Line direction: " << line_pitch << ", " << line_yaw << ", " << line_roll << std::endl;
   // 计算方向向量(假设沿着姿态的X轴方向)
   origin_direction_x = cos(line_yaw) * cos(line_pitch);
@@ -1002,7 +1074,7 @@ bool ArmController::planToFivePointServer(
 
   //平移distance_1
   std::cout<<"------------OUT LINE------------"<<std::endl;
-  double distance_1 = 0.3;
+  double distance_1 = 0.5;
   double pitch_1 = 0.0, roll_1 = 0.0;  // 声明 pitch 和 roll 变量
   std::vector<geometry_msgs::PoseStamped> reachable_poses_out1;
   auto results_3 = translateLine(
@@ -1017,7 +1089,7 @@ bool ArmController::planToFivePointServer(
 
   //平移distance_2
   std::cout<<"------------OUT2 LINE------------"<<std::endl;
-  double distance_2 = -0.3;
+  double distance_2 = -0.5;
   double pitch_2 = 0.0, roll_2 = 0.0;
   std::vector<geometry_msgs::PoseStamped> reachable_poses_out2;
   auto results_4 = translateLine(
@@ -1031,11 +1103,11 @@ bool ArmController::planToFivePointServer(
     );
   
   //2.收集所有可达点
-  std::cout << "\n[Summary] Total reachable poses:" << std::endl;
-  std::cout << "  OUT1: " << reachable_poses_out1.size() << " poses" << std::endl;
-  std::cout << "  OUT2: " << reachable_poses_out2.size() << " poses" << std::endl;
-  std::cout << "  Pitch1: " << pitch_1 << " rad, Roll1: " << roll_1 << " rad" << std::endl;
-  std::cout << "  Pitch2: " << pitch_2 << " rad, Roll2: " << roll_2 << " rad" << std::endl;
+  // std::cout << "\n[Summary] Total reachable poses:" << std::endl;
+  // std::cout << "  OUT1: " << reachable_poses_out1.size() << " poses" << std::endl;
+  // std::cout << "  OUT2: " << reachable_poses_out2.size() << " poses" << std::endl;
+  // std::cout << "  Pitch1: " << pitch_1 << " rad, Roll1: " << roll_1 << " rad" << std::endl;
+  // std::cout << "  Pitch2: " << pitch_2 << " rad, Roll2: " << roll_2 << " rad" << std::endl;
   
   //3.整理所有可达点
   // 对可达点按照到管道中心点的距离进行排序
@@ -1050,7 +1122,7 @@ bool ArmController::planToFivePointServer(
 
   bool success[5] = {false, false, false, false, false};
   
-  // 3.5 发布目标点位供 RViz 可视化
+  // 4. 发布目标点位供 RViz 可视化
   geometry_msgs::PoseArray target_poses_msg;
   target_poses_msg.header.frame_id = "link00";
   target_poses_msg.header.stamp = ros::Time::now();
@@ -1097,7 +1169,100 @@ bool ArmController::planToFivePointServer(
   ROS_INFO("[PlanToFivePoint] Published %zu target poses to /arm_controller/target_poses",
            target_poses_msg.poses.size());
   
-  //4.执行第一个可达点
+  // 发布各组可达点供 RViz 可视化
+  geometry_msgs::PoseArray poses_out1_msg, poses_out2_msg, poses_mid_msg, poses_half1_msg, poses_half2_msg;
+  poses_out1_msg.header.frame_id = "link00";
+  poses_out1_msg.header.stamp = ros::Time::now();
+  poses_out2_msg.header = poses_mid_msg.header = poses_half1_msg.header = poses_half2_msg.header = poses_out1_msg.header;
+  
+  // 填充各组点
+  for (const auto& pose_stamped : reachable_poses_out1) {
+    poses_out1_msg.poses.push_back(pose_stamped.pose);
+  }
+  for (const auto& pose_stamped : reachable_poses_out2) {
+    poses_out2_msg.poses.push_back(pose_stamped.pose);
+  }
+  for (const auto& pose_stamped : reachable_poses_mid) {
+    poses_mid_msg.poses.push_back(pose_stamped.pose);
+  }
+  for (const auto& pose_stamped : reachable_poses_half1) {
+    poses_half1_msg.poses.push_back(pose_stamped.pose);
+  }
+  for (const auto& pose_stamped : reachable_poses_half2) {
+    poses_half2_msg.poses.push_back(pose_stamped.pose);
+  }
+  
+  // 发布各组点
+  poses_out1_pub_.publish(poses_out1_msg);
+  poses_out2_pub_.publish(poses_out2_msg);
+  poses_mid_pub_.publish(poses_mid_msg);
+  poses_half1_pub_.publish(poses_half1_msg);
+  poses_half2_pub_.publish(poses_half2_msg);
+  
+  ROS_INFO("[PlanToFivePoint] Published reachable poses: OUT1=%zu, OUT2=%zu, MID=%zu, HALF1=%zu, HALF2=%zu",
+           poses_out1_msg.poses.size(), poses_out2_msg.poses.size(), poses_mid_msg.poses.size(),
+           poses_half1_msg.poses.size(), poses_half2_msg.poses.size());
+  
+  // 发布 MID 组的所有采样点（包括可达和不可达）
+  geometry_msgs::PoseArray poses_mid_all_msg;
+  poses_mid_all_msg.header.frame_id = "link00";
+  poses_mid_all_msg.header.stamp = ros::Time::now();
+  
+  // 从 results中提取所有采样点
+  for (const auto& result_pair : results) {
+    const std::vector<Eigen::Vector3d>& sampled_points = result_pair.second;
+    for (const auto& point : sampled_points) {
+      geometry_msgs::Pose pose;
+      pose.position.x = point.x();
+      pose.position.y = point.y();
+      pose.position.z = point.z();
+      pose.orientation.w = 1.0;
+      pose.orientation.x = 0.0;
+      pose.orientation.y = 0.0;
+      pose.orientation.z = 0.0;
+      poses_mid_all_msg.poses.push_back(pose);
+    }
+  }
+  
+  poses_mid_all_pub_.publish(poses_mid_all_msg);
+  ROS_INFO("[PlanToFivePoint] Published %zu total MID sampled points (reachable + unreachable)",
+           poses_mid_all_msg.poses.size());
+  geometry_msgs::PoseStamped center_poses_msg;
+  center_poses_msg.header.frame_id = "link00";
+  center_poses_msg.header.stamp = ros::Time::now();
+  center_poses_msg.pose.position.x = center_x;
+  center_poses_msg.pose.position.y = center_y;
+  center_poses_msg.pose.position.z = center_z;
+  
+  // 将方向向量转换为四元数
+  // 使用方向向量创建一个旋转，使得Z轴指向该方向
+  Eigen::Vector3d z_axis(0, 0, 1);
+  Eigen::Vector3d direction = original_line.direction.normalized();
+  
+  // 计算旋转轴和角度
+  Eigen::Vector3d quat_rotation_axis = z_axis.cross(direction);
+  double quat_rotation_angle = std::acos(z_axis.dot(direction));
+  
+  Eigen::Quaterniond eigen_quat;
+  if (quat_rotation_axis.norm() < 1e-6) {
+    // 方向向量与Z轴平行或反平行
+    if (z_axis.dot(direction) > 0) {
+      eigen_quat = Eigen::Quaterniond::Identity();  // 同向
+    } else {
+      eigen_quat = Eigen::Quaterniond(0, 1, 0, 0);  // 反向，绕X轴旋转180度
+    }
+  } else {
+    quat_rotation_axis.normalize();
+    eigen_quat = Eigen::Quaterniond(Eigen::AngleAxisd(quat_rotation_angle, quat_rotation_axis));
+  }
+  
+  center_poses_msg.pose.orientation.w = req.target_pose.pose.orientation.w;
+  center_poses_msg.pose.orientation.x = req.target_pose.pose.orientation.x;
+  center_poses_msg.pose.orientation.y = req.target_pose.pose.orientation.y;
+  center_poses_msg.pose.orientation.z = req.target_pose.pose.orientation.z;
+  center_pub_.publish(center_poses_msg);
+  ROS_INFO("[PlanToFivePoint] Published center pose to /arm_controller/center_point");
+  //5.执行第一个可达点
   if (!reachable_poses_half1.empty()) {
     success[0] = executeMotionToTarget(reachable_poses_mid[0].pose, pitch_0, roll_0, 10.0);
   }
@@ -1199,8 +1364,8 @@ void ArmController::imuCallback(const sensor_msgs::Imu::ConstPtr& imu) {
 
 void ArmController::executeProcessCallback(const std_msgs::Float64::ConstPtr& msg) {
   execute_process_ = msg->data;
-  ROS_INFO("[ExecuteProcess] Control signal updated: %.1f (%s)", 
-           execute_process_, execute_process_ >= 1.0 ? "ENABLED" : "DISABLED");
+  // ROS_INFO("[ExecuteProcess] Control signal updated: %.1f (%s)", 
+  //          execute_process_, execute_process_ >= 1.0 ? "ENABLED" : "DISABLED");
 }
 
 bool ArmController::controlJoint6AndGripper(double gripper_pos, double joint6_pos) {
@@ -1289,19 +1454,19 @@ bool ArmController::executeMotionToTarget(const geometry_msgs::Pose& target_pose
                                           double pitch,
                                           double roll,
                                           double timeout_seconds) {
-  ROS_INFO("[ExecuteMotionToTarget] Starting motion to target position: (%.3f, %.3f, %.3f)",
-           target_pose.position.x, target_pose.position.y, target_pose.position.z);
+  // ROS_INFO("[ExecuteMotionToTarget] Starting motion to target position: (%.3f, %.3f, %.3f)",
+  //          target_pose.position.x, target_pose.position.y, target_pose.position.z);
   
   // 1. 规划到目标位姿
   bool success_plan = planToTargetPose(target_pose);
   
   if (!success_plan) {
-    ROS_ERROR("[ExecuteMotionToTarget] Failed to plan motion to target pose");
+    // ROS_ERROR("[ExecuteMotionToTarget] Failed to plan motion to target pose");
     return false;
   }
   
   // 2. 等待机械臂到达目标位置
-  ROS_INFO("[ExecuteMotionToTarget] Waiting for arm to reach target position...");
+  // ROS_INFO("[ExecuteMotionToTarget] Waiting for arm to reach target position...");
   ros::Rate rate(10);  // 10Hz
   int timeout_count = 0;
   int max_timeout = static_cast<int>(timeout_seconds * 10);  // 转换为循环次数
@@ -1312,37 +1477,37 @@ bool ArmController::executeMotionToTarget(const geometry_msgs::Pose& target_pose
   }
   
   if (timeout_count >= max_timeout) {
-    ROS_WARN("[ExecuteMotionToTarget] Timeout waiting for arm to arrive (%.1f seconds)", timeout_seconds);
+    // ROS_WARN("[ExecuteMotionToTarget] Timeout waiting for arm to arrive (%.1f seconds)", timeout_seconds);
     return false;
   }
   
-  ROS_INFO("[ExecuteMotionToTarget] Arm arrived at target position");
+  // ROS_INFO("[ExecuteMotionToTarget] Arm arrived at target position");
   
   // 3. 根据 execute_process_ 信号决定是否执行夹爪控制
-  ROS_INFO("[ExecuteMotionToTarget] execute_process_ status: %s", 
-           execute_process_ ? "ENABLED" : "DISABLED");
+  // ROS_INFO("[ExecuteMotionToTarget] execute_process_ status: %s", 
+  //          execute_process_ ? "ENABLED" : "DISABLED");
   
   if (execute_process_ >= 1.0) {
-    ROS_INFO("[ExecuteMotionToTarget] Executing gripper control (pitch: %.3f rad, roll: %.3f rad)...",
-             pitch, roll);
+    // ROS_INFO("[ExecuteMotionToTarget] Executing gripper control (pitch: %.3f rad, roll: %.3f rad)...",
+    //          pitch, roll);
     bool success_gripper = controlJoint6AndGripper(pitch, roll);
     
     if (!success_gripper) {
-      ROS_ERROR("[ExecuteMotionToTarget] Gripper control failed");
+      // ROS_ERROR("[ExecuteMotionToTarget] Gripper control failed");
       return false;
     }
     
-    ROS_INFO("[ExecuteMotionToTarget] Gripper control command sent. Waiting 1 second...");
+    // ROS_INFO("[ExecuteMotionToTarget] Gripper control command sent. Waiting 1 second...");
     
     // 等待夹爪动作执行 1 秒
     ros::Duration(1.0).sleep();
     
-    ROS_INFO("[ExecuteMotionToTarget] Gripper action completed");
+    // ROS_INFO("[ExecuteMotionToTarget] Gripper action completed");
   } else {
-    ROS_INFO("[ExecuteMotionToTarget] Skipping gripper control (execute_process is disabled)");
+    // ROS_INFO("[ExecuteMotionToTarget] Skipping gripper control (execute_process is disabled)");
   }
   
-  ROS_INFO("[ExecuteMotionToTarget] Motion execution completed successfully");
+  // ROS_INFO("[ExecuteMotionToTarget] Motion execution completed successfully");
   return true;
 }
 
@@ -1636,6 +1801,9 @@ ArmController::generateRotatedLinesWithSamples(
         pose_stamped.header.stamp = ros::Time::now();
         pose_stamped.pose = pose;
         reachable_poses.push_back(pose_stamped);
+      }else{
+        std::cout << "  Point[" << j << "]: (" << pose.position.x << ", " 
+                  << pose.position.y << ", " << pose.position.z << ") is NOT OK" << std::endl;
       }
     }
 

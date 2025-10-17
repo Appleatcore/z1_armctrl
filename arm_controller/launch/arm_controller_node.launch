@@ -33,7 +33,7 @@
         <param name="test/angle_step_deg" value="45.0" />
     </node>
 
-<node pkg="tf2_ros" type="static_transform_publisher" name="arm2zed" args="-0.39865 0. -0.02174 0 -2.093 0 link02 zed_base"/>
+    <node pkg="tf2_ros" type="static_transform_publisher" name="arm2zed" args="-0.39865 0. -0.02174 0 -2.093 0 link02 zed_base"/>
     <!-- <node pkg="robot_state_publisher" type="robot_state_publisher" name="arm_state_publisher">
         <remap from="/$(arg topic_group)/joint_states" to="/$(arg topic_group)_rviz/joint_states" />
     </node> -->

@@ -63,6 +63,7 @@ add_service_files(
   PlanToDefault.srv
   JoyStickControl.srv
   GripperControl.srv
+  PlanTofivepoint.srv
 )
 
 # # Generate actions in the 'action' folder

@@ -1,6 +1,7 @@
 #include "arm_controller/arm_controller.h"
 
 #include "arm_controller/geometry_utils.h"
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 namespace arm_controller {
 
@@ -1355,11 +1356,13 @@ bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose) {
   return true;
 }
 void ArmController::imuCallback(const sensor_msgs::Imu::ConstPtr& imu) {
-  // Note: _gravity is protected member, cannot access directly
-  // If needed, you can modify the Z1 SDK to add a public setter
-  // arm_model_->_gravity[0] = -imu->linear_acceleration.x;
-  // arm_model_->_gravity[1] = -imu->linear_acceleration.y;
-  // arm_model_->_gravity[2] = -imu->linear_acceleration.z;
+  tf2::Vector3 gravity_world(0, 0, -9.81);
+  tf2::Quaternion orientation;
+  tf2::fromMsg(imu->orientation, orientation);
+  tf2::Vector3 gravity_imu = tf2::quatRotate(orientation.inverse(), gravity_world);
+  arm_model_->_gravity[0] = gravity_imu.x();
+  arm_model_->_gravity[1] = gravity_imu.y();
+  arm_model_->_gravity[2] = gravity_imu.z();
 }
 
 void ArmController::executeProcessCallback(const std_msgs::Float64::ConstPtr& msg) {

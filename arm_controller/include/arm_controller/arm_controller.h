@@ -266,8 +266,10 @@ class ArmController {
   long unsigned int arm_control_tick_{0};
   Eigen::Matrix<double, 6, 1> arm_control_joint_pos_, arm_control_joint_vel_;
   bool arm_motor_safe_{true};
-  std::vector<double> default_kp_{5, 7.5, 7.5, 5, 3.75, 2.5},
-      default_kd_{500, 500, 500, 500, 500, 500};
+  // std::vector<double> default_kp_{5, 7.5, 7.5, 5, 3.75, 2.5},
+  //     default_kd_{500, 500, 500, 500, 500, 500};
+  std::vector<double> default_kp_{20, 30, 30, 20, 15, 10},
+      default_kd_{2000, 2000, 2000, 2000, 2000, 2000};
   // moveit planner
   // std::unique_ptr<ArmPlanner> planner_;
   // planning

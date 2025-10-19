@@ -27,6 +27,8 @@
 #include "arm_controller_srvs/Plan.h"
 #include "arm_controller_srvs/PlanToDefault.h"
 #include "arm_controller_srvs/PlanTofivepoint.h"
+#include "arm_controller_srvs/planandgrippercontrol.h"
+#include "arm_controller_srvs/getgoalandangle.h"
 #include "js_api.h"
 #include "js_dev.h"
 // #include "arm_planner.h"
@@ -124,6 +126,10 @@ class ArmController {
                             arm_controller_srvs::GripperControl::Response& res);
   bool planToFivePointServer(arm_controller_srvs::PlanTofivepoint::Request& req,
                              arm_controller_srvs::PlanTofivepoint::Response& res);
+  bool planAndGripperControlServer(arm_controller_srvs::planandgrippercontrol::Request& req,
+                                   arm_controller_srvs::planandgrippercontrol::Response& res);
+  bool getGoalAndAngleServer(arm_controller_srvs::getgoalandangle::Request& req,
+                             arm_controller_srvs::getgoalandangle::Response& res);
   void imuCallback(const sensor_msgs::Imu::ConstPtr& imu);
   void executeProcessCallback(const std_msgs::Float64::ConstPtr& msg);
   
@@ -152,6 +158,7 @@ class ArmController {
   std::vector<geometry_msgs::PoseStamped> sortPosesByDistanceToPoint(
       const std::vector<geometry_msgs::PoseStamped>& poses,
       const Eigen::Vector3d& reference_point,
+      const Eigen::Vector3d& line_direction,
       double target_distance);
   
   /**
@@ -168,7 +175,7 @@ class ArmController {
                              double timeout_seconds = 10.0);
   
   /**
-   * @brief 计算直线绕旋转轴旋转后的解析式
+   * @brief 计算直线绕旋转轴旋转后的解析式（纯几何变换，不涉及采样和IK检测）
    * @param line 原始直线
    * @param rotation_center 旋转中心点
    * @param rotation_axis 旋转轴方向（单位向量）
@@ -179,6 +186,35 @@ class ArmController {
                     const Eigen::Vector3d& rotation_center,
                     const Eigen::Vector3d& rotation_axis,
                     double angle_rad) const;
+  
+  /**
+   * @brief 计算直线沿指定方向平移指定距离后的解析式（纯几何变换，不涉及采样和IK检测）
+   * @param line 原始直线
+   * @param direction 平移方向向量
+   * @param distance 平移距离
+   * @return 平移后的直线
+   */
+  Line3D translateLineGeometry(const Line3D& line,
+                               const Eigen::Vector3d& direction,
+                               double distance) const;
+  
+  /**
+   * @brief 对直线进行采样并检测每个采样点的可达性
+   * @param line 要采样的直线
+   * @param t_start 采样起始参数
+   * @param t_end 采样结束参数
+   * @param num_samples 采样点数
+   * @param pitch 输出参数：相机 pitch 角度（弧度）
+   * @param roll 输出参数：相机 roll 角度（弧度）
+   * @return 可达的位姿列表
+   */
+  std::vector<geometry_msgs::PoseStamped> sampleAndCheckReachability(
+      const Line3D& line,
+      double t_start,
+      double t_end,
+      int num_samples,
+      double& pitch,
+      double& roll);
   
   /**
    * @brief 计算直线沿指定方向平移指定距离后的解析式
@@ -244,7 +280,9 @@ class ArmController {
                                    int num_samples,
                                    std::vector<geometry_msgs::PoseStamped>& reachable_poses,
                                    double& pitch,
-                                   double& roll);
+                                   double& roll,
+                                   ros::Publisher* line_publisher = nullptr,
+                                   int viz_points = 50);
   // action
   // void planActionServer(const arm_controller::PlanGoalConstPtr& goal);
 
@@ -266,14 +304,14 @@ class ArmController {
   long unsigned int arm_control_tick_{0};
   Eigen::Matrix<double, 6, 1> arm_control_joint_pos_, arm_control_joint_vel_;
   bool arm_motor_safe_{true};
-  // std::vector<double> default_kp_{5, 7.5, 7.5, 5, 3.75, 2.5},
-  //     default_kd_{500, 500, 500, 500, 500, 500};
-  std::vector<double> default_kp_{20, 30, 30, 20, 15, 10},
-      default_kd_{2000, 2000, 2000, 2000, 2000, 2000};
+  std::vector<double> default_kp_{5, 7.5, 7.5, 5, 3.75, 2.5},
+  default_kd_{500, 500, 500, 500, 500, 500};
+  // std::vector<double> default_kp_{20, 30, 30, 20, 15, 10},
+  //     default_kd_{2000, 2000, 2000, 2000, 2000, 2000};
   // moveit planner
   // std::unique_ptr<ArmPlanner> planner_;
   // planning
-  const Eigen::Vector3d kCameraPosBias_E_{0.03702, 0.0, 0.0502};
+  const Eigen::Vector3d kCameraPosBias_E_{0.0, 0.0, 0.0};
   Eigen::Matrix<double, 6, 1> arm_joint_goal_, KJointHome_;
   Eigen::Matrix4d ee_pose_goal_, kEePoseHome_;
   std::vector<Eigen::Matrix<double, 6, 1>> joint_pos_trajectory_;
@@ -311,6 +349,13 @@ class ArmController {
   ros::Publisher poses_half2_pub_;   // 发布 HALF2 可达点
   ros::Publisher poses_mid_all_pub_; // 发布 MID 所有采样点（包括可达和不可达）
   ros::Publisher transformed_input_pub_; // 发布变换后的输入姿态
+  // 发布5条直线的可视化
+  ros::Publisher line_mid_pub_;      // 发布 MID 直线
+  ros::Publisher line_out1_pub_;     // 发布 OUT1 直线
+  ros::Publisher line_out2_pub_;     // 发布 OUT2 直线
+  ros::Publisher line_half1_pub_;    // 发布 HALF1 直线
+  ros::Publisher line_half2_pub_;    // 发布 HALF2 直线
+  ros::Publisher reference_points_pub_; // 发布五个参考点
   tf::TransformBroadcaster tf_broadcaster_; // TF 广播器，用于发布坐标变换
   ros::Subscriber imu_sub_;
   ros::Subscriber execute_process_sub_;  // 订阅执行控制信号
@@ -318,7 +363,8 @@ class ArmController {
   ros::ServiceServer back2home_server_, check_pose_in_workspace_server_,
       plan_server_, search_plan_server_, rotation_search_plan_server_,
       plan_to_default_server_, js_control_server_, gripper_control_server_,
-      plan_to_five_point_server_;
+      plan_to_five_point_server_, plan_and_gripper_control_server_,
+      get_goal_and_angle_server_;
   // action server
   // std::unique_ptr<actionlib::SimpleActionServer<arm_controller::PlanAction>>
   //     plan_action_server_;

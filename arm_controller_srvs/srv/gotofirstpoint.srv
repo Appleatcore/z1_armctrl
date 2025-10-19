@@ -1,0 +1,5 @@
+geometry_msgs/Pose target_pose
+float64 gripper_pos  
+float64 joint6_pos   # Joint6 角度（弧度）
+---
+bool call_success

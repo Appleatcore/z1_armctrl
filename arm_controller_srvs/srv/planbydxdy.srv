@@ -1,3 +1,0 @@
-geometry_msgs/Pose target_pose_input
----
-geometry_msgs/Pose target_pose_out

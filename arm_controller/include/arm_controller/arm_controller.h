@@ -13,6 +13,9 @@
 #include <std_msgs/Float64.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 // #include <shared_mutex>
 #include <algorithm>
 #include <cmath>
@@ -29,6 +32,8 @@
 #include "arm_controller_srvs/PlanTofivepoint.h"
 #include "arm_controller_srvs/planandgrippercontrol.h"
 #include "arm_controller_srvs/getgoalandangle.h"
+#include "arm_controller_srvs/zedlinktolink00.h"
+#include "arm_controller_srvs/CameraToLink00.h"
 #include "js_api.h"
 #include "js_dev.h"
 // #include "arm_planner.h"
@@ -130,6 +135,10 @@ class ArmController {
                                    arm_controller_srvs::planandgrippercontrol::Response& res);
   bool getGoalAndAngleServer(arm_controller_srvs::getgoalandangle::Request& req,
                              arm_controller_srvs::getgoalandangle::Response& res);
+  bool zedLinkToLink00Server(arm_controller_srvs::zedlinktolink00::Request& req,
+                             arm_controller_srvs::zedlinktolink00::Response& res);
+  bool cameraToLink00Server(arm_controller_srvs::CameraToLink00::Request& req,
+                            arm_controller_srvs::CameraToLink00::Response& res);
   void imuCallback(const sensor_msgs::Imu::ConstPtr& imu);
   void executeProcessCallback(const std_msgs::Float64::ConstPtr& msg);
   
@@ -138,7 +147,7 @@ class ArmController {
    * @param target_pose 目标位姿 (geometry_msgs::Pose)
    * @return true 如果规划成功，false 否则
    */
-  bool planToTargetPose(const geometry_msgs::Pose& target_pose);
+   bool planToTargetPose(const geometry_msgs::Pose& target_pose, const double& joint6_pos=0.0, const bool& use_manual_joint6=false);
   
   /**
    * @brief 控制 Joint6 和夹爪位置
@@ -147,6 +156,12 @@ class ArmController {
    * @return true 如果控制成功，false 否则
    */
   bool controlJoint6AndGripper(double joint6_pos, double gripper_pos);
+  
+  /**
+   * @brief 移动到默认点（用于安全过渡）
+   * @return true 如果成功移动到默认点，false 否则
+   */
+  bool goToDefaultPoint();
   
   /**
    * @brief 对位姿列表按照到参考点的距离进行排序
@@ -304,10 +319,10 @@ class ArmController {
   long unsigned int arm_control_tick_{0};
   Eigen::Matrix<double, 6, 1> arm_control_joint_pos_, arm_control_joint_vel_;
   bool arm_motor_safe_{true};
-  std::vector<double> default_kp_{5, 7.5, 7.5, 5, 3.75, 2.5},
-  default_kd_{500, 500, 500, 500, 500, 500};
-  // std::vector<double> default_kp_{20, 30, 30, 20, 15, 10},
-  //     default_kd_{2000, 2000, 2000, 2000, 2000, 2000};
+  // std::vector<double> default_kp_{5, 7.5, 7.5, 5, 3.75, 2.5},
+  // default_kd_{500, 500, 500, 500, 500, 500};
+  std::vector<double> default_kp_{20, 30, 30, 20, 15, 10},
+      default_kd_{2000, 2000, 2000, 2000, 2000, 2000};
   // moveit planner
   // std::unique_ptr<ArmPlanner> planner_;
   // planning
@@ -349,6 +364,7 @@ class ArmController {
   ros::Publisher poses_half2_pub_;   // 发布 HALF2 可达点
   ros::Publisher poses_mid_all_pub_; // 发布 MID 所有采样点（包括可达和不可达）
   ros::Publisher transformed_input_pub_; // 发布变换后的输入姿态
+  ros::Publisher camera_transformed_pose_pub_; // 发布相机坐标系到link00坐标系的变换结果
   // 发布5条直线的可视化
   ros::Publisher line_mid_pub_;      // 发布 MID 直线
   ros::Publisher line_out1_pub_;     // 发布 OUT1 直线
@@ -357,6 +373,8 @@ class ArmController {
   ros::Publisher line_half2_pub_;    // 发布 HALF2 直线
   ros::Publisher reference_points_pub_; // 发布五个参考点
   tf::TransformBroadcaster tf_broadcaster_; // TF 广播器，用于发布坐标变换
+  tf2_ros::Buffer tf_buffer_;                // TF2 缓冲区，用于查询坐标变换
+  tf2_ros::TransformListener tf_listener_;  // TF2 监听器
   ros::Subscriber imu_sub_;
   ros::Subscriber execute_process_sub_;  // 订阅执行控制信号
   // server
@@ -364,7 +382,7 @@ class ArmController {
       plan_server_, search_plan_server_, rotation_search_plan_server_,
       plan_to_default_server_, js_control_server_, gripper_control_server_,
       plan_to_five_point_server_, plan_and_gripper_control_server_,
-      get_goal_and_angle_server_;
+      get_goal_and_angle_server_, zed_link_to_link00_server_,camera_to_link00_server_;
   // action server
   // std::unique_ptr<actionlib::SimpleActionServer<arm_controller::PlanAction>>
   //     plan_action_server_;

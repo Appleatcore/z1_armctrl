@@ -66,7 +66,9 @@ add_service_files(
   PlanTofivepoint.srv
   planandgrippercontrol.srv
   getgoalandangle.srv
-  planbydxdy.srv
+  zedlinktolink00.srv
+  CameraToLink00.srv
+  crossgetgoalandangle.srv
 )
 
 # # Generate actions in the 'action' folder

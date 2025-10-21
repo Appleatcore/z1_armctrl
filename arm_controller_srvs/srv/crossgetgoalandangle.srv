@@ -1,0 +1,9 @@
+# 输入：目标位姿（与 PlanTofivepoint 相同）
+geometry_msgs/PoseStamped target_pose
+---
+# 输出：5个目标点位和对应的角度
+geometry_msgs/Pose[] target_poses  # 最多5个目标点位 [MID, LEFT1, LEFT2, RIGHT1, RIGHT2]
+float64[] pitch_angles              # 对应的 pitch 角度
+float64[] roll_angles               # 对应的 roll 角度
+string[] pose_names                 # 点位名称 ["MID", "LEFT1", "LEFT2", "RIGHT1", "RIGHT2"]
+bool call_success                   # 是否成功

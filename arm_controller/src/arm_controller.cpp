@@ -5,7 +5,7 @@
 
 namespace arm_controller {
 
-ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh) {
+ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh), tf_listener_(tf_buffer_) {
   arm_api_ = std::make_unique<ArmApi>();
   arm_model_ = std::make_unique<Z1ArmModel>();
   
@@ -276,6 +276,8 @@ void ArmController::initSubsAndPubs() {
       nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/poses_mid_all", 1);
   transformed_input_pub_ = 
       nh_.advertise<geometry_msgs::PoseStamped>("/arm_controller/transformed_input_pose", 1);
+  camera_transformed_pose_pub_ = 
+      nh_.advertise<geometry_msgs::PoseStamped>("/arm_controller/camera_transformed_pose", 1);
   // 初始化直线可视化发布器
   line_mid_pub_ = 
       nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/line_mid", 1);
@@ -313,7 +315,12 @@ void ArmController::initServers() {
       "plan_and_gripper_control", &ArmController::planAndGripperControlServer, this);
   get_goal_and_angle_server_ = nh_.advertiseService(
       "get_goal_and_angle", &ArmController::getGoalAndAngleServer, this);
-  
+  zed_link_to_link00_server_ = nh_.advertiseService(
+      "zed_link_to_link00", &ArmController::zedLinkToLink00Server, this);
+  camera_to_link00_server_ = nh_.advertiseService(
+    "camera_to_link00", &ArmController::cameraToLink00Server, this);
+  cross_get_goal_and_angle_server_ = nh_.advertiseService(
+    "cross_get_goal_and_angle", &ArmController::getCrossGoalAndAngleServer, this);
   // 订阅执行控制信号（从机械臂控制器获取状态）
   execute_process_sub_ = nh_.subscribe<std_msgs::Float64>(
       "/arm_controller/execute_process", 1, &ArmController::executeProcessCallback, this);
@@ -812,45 +819,11 @@ bool ArmController::planToDefaultServer(
            default_target_pose.position.x, 
            default_target_pose.position.y, 
            default_target_pose.position.z);
+  
+  bool success_flag = executeMotionToTarget(default_target_pose,0.0,0.0,10);
 
-  if (arm_control_fsm_ == ArmControlFsm::Home ||
-      arm_control_fsm_ == ArmControlFsm::Arrived) {
-    Eigen::Matrix4d start_ee_pose =
-        arm_model_->forwardKinematics(low_state_.getQ());
-    Eigen::Matrix<double, 6, 1> start_joint_pos = low_state_.getQ();
-    Eigen::Matrix4d camera_target_pose, target_pose;
-    Eigen::Matrix<double, 6, 1> target_joint_pos;
-    bool find_ik{false};
-    arm_controller::geometryMsgsPose2Pose(default_target_pose, camera_target_pose);
-    target_pose = camera_target_pose;
-    target_pose.block<3, 1>(0, 3) =
-        camera_target_pose.block<3, 1>(0, 3) -
-        camera_target_pose.block<3, 3>(0, 0) * kCameraPosBias_E_;
-    find_ik = arm_model_->inverseKinematics(target_pose, start_joint_pos,
-                                            target_joint_pos, true);
-    if (arm_motor_safe_ && find_ik) {
-      if ((target_joint_pos - start_joint_pos).norm() <= 0.042) {
-        res.call_success = true;
-        return true;
-      }
-      ee_pose_goal_ = target_pose;
-      arm_joint_goal_ = target_joint_pos;
-      plan_max_tick_ = static_cast<long unsigned int>(
-          (ee_pose_goal_ - start_ee_pose).block<3, 1>(0, 3).norm() /
-          average_move_speed_ / control_period_);
-      plan_max_tick_ = std::max(100uL, plan_max_tick_);
-      lazyPlan(start_joint_pos, arm_joint_goal_, plan_max_tick_);
-      setArmControlFsm(ArmControlFsm::PlanMove);
-
-      // // 同时规划夹爪轨迹（从当前位置到目标位置）
-      // double gripper_current = low_state_.getGripperQ();
-      // // 可以用线性插值或者直接设置目标值
-      // gripper_goal_ = gripper_goal;
-
-      res.call_success = true;
-    }
-  }
-  return true;
+  res.call_success = success_flag;
+  return success_flag;
 }
 
 bool ArmController::jsControlServer(
@@ -872,110 +845,133 @@ bool ArmController::jsControlServer(
   return true;
 }
 
-bool ArmController::gripperControlServer(
-    arm_controller_srvs::GripperControl::Request& req,
-    arm_controller_srvs::GripperControl::Response& res) {
-  res.call_success = false;
-  
-  // 检查 Joint6 角度范围
-  if (req.joint6_pos < -3.14 || req.joint6_pos > 3.14) {
-    std::cout << "[Gripper Control] Invalid Joint6 position: " << req.joint6_pos
-              << " rad (valid range: -3.14 to 3.14)" << std::endl;
+bool ArmController::cameraToLink00Server(
+  arm_controller_srvs::CameraToLink00::Request& req,
+  arm_controller_srvs::CameraToLink00::Response& res) {
+  try {
+    // 1. 尝试获取相机坐标系到 link00 的变换
+    geometry_msgs::TransformStamped transform_stamped;
+    bool has_camera_frame = false;
+    
+    try {
+      transform_stamped = tf_buffer_.lookupTransform(
+          "link00", "camera_optical_frame", ros::Time(0), ros::Duration(0.5));
+      has_camera_frame = true;
+      ROS_INFO("[CameraToLink00] Found camera frame in TF tree");
+    } catch (tf2::TransformException& ex) {
+      ROS_WARN("[CameraToLink00] No camera frame found: %s. Using link00 frame directly.", ex.what());
+      has_camera_frame = false;
+    }
+
+    // 2. 根据是否有 camera 坐标系来处理
+    geometry_msgs::PoseStamped result_pose_stamped;
+    result_pose_stamped.header.frame_id = "link00";
+    result_pose_stamped.header.stamp = ros::Time::now();
+
+    if (has_camera_frame) {
+      // 有 camera 坐标系:创建相机坐标系下的偏移位姿并转换
+      geometry_msgs::PoseStamped camera_offset_pose;
+      camera_offset_pose.header.frame_id = "camera_optical_frame";
+      camera_offset_pose.header.stamp = ros::Time::now();
+      camera_offset_pose.pose.position.x = req.dx;
+      camera_offset_pose.pose.position.y = req.dy;
+      camera_offset_pose.pose.position.z = 0.0;  // 假设偏移在相机平面上
+      camera_offset_pose.pose.orientation.w = 1.0;
+      camera_offset_pose.pose.orientation.x = 0.0;
+      camera_offset_pose.pose.orientation.y = 0.0;
+      camera_offset_pose.pose.orientation.z = 0.0;
+
+      // 将相机坐标系下的偏移位姿转换到 link00 坐标系
+      geometry_msgs::PoseStamped link00_pose;
+      tf2::doTransform(camera_offset_pose, link00_pose, transform_stamped);
+      res.target_pose = link00_pose.pose;
+      res.success = true;  // 转换成功
+      
+      // 设置发布的位姿
+      result_pose_stamped.pose = link00_pose.pose;
+
+      ROS_INFO("[CameraToLink00] Offset (dx=%.3f, dy=%.3f) in camera frame -> "
+              "Position (%.3f, %.3f, %.3f) in link00 frame (with TF transform)",
+              req.dx, req.dy,
+              res.target_pose.position.x,
+              res.target_pose.position.y,
+              res.target_pose.position.z);
+    } else {
+      // 没有 camera 坐标系:直接在 link00 坐标系下应用偏移
+      res.target_pose.position.x = req.dx;
+      res.target_pose.position.y = req.dy;
+      res.target_pose.position.z = 0.0;
+      res.target_pose.orientation.w = 1.0;
+      res.target_pose.orientation.x = 0.0;
+      res.target_pose.orientation.y = 0.0;
+      res.target_pose.orientation.z = 0.0;
+      res.success = false;  // 未使用 TF 转换
+      
+      // 设置发布的位姿
+      result_pose_stamped.pose = res.target_pose;
+
+      ROS_WARN("[CameraToLink00] No camera frame. Using offset (dx=%.3f, dy=%.3f) directly in link00 frame (no TF transform)",
+              req.dx, req.dy);
+    }
+
+    // 3. 发布转换后的位姿到话题
+    camera_transformed_pose_pub_.publish(result_pose_stamped);
+    ROS_DEBUG("[CameraToLink00] Published transformed pose to /arm_controller/camera_transformed_pose");
+
     return true;
+  } catch (const std::exception& e) {
+    ROS_ERROR("[CameraToLink00] Exception: %s", e.what());
+    return false;
   }
-  
-  // 如果不在 Arrived 或 PlanMove 状态，需要初始化机械臂位置
-  if (arm_control_fsm_ != ArmControlFsm::Arrived && 
-      arm_control_fsm_ != ArmControlFsm::PlanMove) {
-    arm_control_joint_pos_ = low_state_.getQ();  // 保持当前位置
-    arm_control_joint_vel_.setZero();
-  }
-  
-  // 设置夹爪目标
-  gripper_goal_ = req.gripper_pos;
-  
-  // 设置 Joint6 目标
-  arm_control_joint_pos_[5] = req.joint6_pos;  // Joint6 是索引 5
-  
-  std::cout << "[Gripper Control] Setting Joint6 to: " << req.joint6_pos 
-            << " rad (" << (req.joint6_pos * 180.0 / 3.14159) << " deg), "
-            << "Gripper to: " << gripper_goal_ << std::endl;
-  
-  res.call_success = true;
-  setArmControlFsm(ArmControlFsm::Arrived);
+}
+
+
+bool ArmController::gripperControlServer(
+  arm_controller_srvs::GripperControl::Request& req,
+  arm_controller_srvs::GripperControl::Response& res) {
+  res.call_success = false;
+
+  // 检查 Joint6 角度范围
+  // if (req.joint6_pos < -3.14 || req.joint6_pos > 3.14) {
+  //   std::cout << "[Gripper Control] Invalid Joint6 position: " << req.joint6_pos
+  //             << " rad (valid range: -3.14 to 3.14)" << std::endl;
+  //   return true;
+  // }
+
+  // // 如果不在 Arrived 或 PlanMove 状态，需要初始化机械臂位置
+  // if (arm_control_fsm_ != ArmControlFsm::Arrived && 
+  //     arm_control_fsm_ != ArmControlFsm::PlanMove) {
+  //   arm_control_joint_pos_ = low_state_.getQ();  // 保持当前位置
+  //   arm_control_joint_vel_.setZero();
+  // }
+
+  // // 设置夹爪目标
+  // gripper_goal_ = req.gripper_pos;
+
+  // // 设置 Joint6 目标
+  // arm_control_joint_pos_[5] = req.joint6_pos;  // Joint6 是索引 5
+
+  // std::cout << "[Gripper Control] Setting Joint6 to: " << req.joint6_pos 
+  //           << " rad (" << (req.joint6_pos * 180.0 / 3.14159) << " deg), "
+  //           << "Gripper to: " << gripper_goal_ << std::endl;
+
+  res.call_success = false;
+  // setArmControlFsm(ArmControlFsm::Arrived);
   return true;
 }
 
 bool ArmController::planAndGripperControlServer(
     arm_controller_srvs::planandgrippercontrol::Request& req,
     arm_controller_srvs::planandgrippercontrol::Response& res) {
-  res.call_success = false;
+  // res.call_success = false;
   
-  ROS_INFO("[PlanAndGripperControl] Received request:");
-  ROS_INFO("  Target position: (%.3f, %.3f, %.3f)",
-           req.target_pose.position.x,
-           req.target_pose.position.y,
-           req.target_pose.position.z);
-  ROS_INFO("  Gripper position: %.3f", req.gripper_pos);
-  ROS_INFO("  Joint6 angle: %.3f rad (%.1f deg)",
-           req.joint6_pos, req.joint6_pos * 180.0 / M_PI);
+  // 从 ROS 参数服务器读取默认目标位姿
+  geometry_msgs::Pose planandgrippercontrol_target_pose=req.target_pose;
+  float pitch = req.gripper_pos;
+  float roll = req.joint6_pos;
   
-  // 步骤 1: 执行运动规划
-  ROS_INFO("[PlanAndGripperControl] Step 1: Planning to target pose...");
-  bool plan_success = planToTargetPose(req.target_pose);
-  
-  if (!plan_success) {
-    ROS_ERROR("[PlanAndGripperControl] Motion planning failed!");
-    return true;
-  }
-  
-  // 等待运动完成
-  ROS_INFO("[PlanAndGripperControl] Waiting for motion to complete...");
-  ros::Rate rate(10);  // 10 Hz
-  int timeout_count = 0;
-  const int max_timeout = 300;  // 30秒超时
-  
-  while (ros::ok() && timeout_count < max_timeout) {
-    if (arm_control_fsm_ == ArmControlFsm::Arrived) {
-      ROS_INFO("[PlanAndGripperControl] Motion completed!");
-      break;
-    }
-    rate.sleep();
-    timeout_count++;
-  }
-  
-  if (timeout_count >= max_timeout) {
-    ROS_WARN("[PlanAndGripperControl] Motion timeout, but continuing to gripper control...");
-  }
-  
-  // 步骤 2: 控制夹爪和 Joint6
-  ROS_INFO("[PlanAndGripperControl] Step 2: Controlling gripper and Joint6...");
-  
-  // 检查 Joint6 角度范围
-  if (req.joint6_pos < -3.14 || req.joint6_pos > 3.14) {
-    ROS_ERROR("[PlanAndGripperControl] Invalid Joint6 position: %.3f rad (valid range: -3.14 to 3.14)",
-              req.joint6_pos);
-    return true;
-  }
-  
-  // 检查夹爪位置范围
-  if (req.gripper_pos < -0.85 || req.gripper_pos > 0.0) {
-    ROS_WARN("[PlanAndGripperControl] Gripper position %.3f is out of typical range (0.0 to -0.85)",
-             req.gripper_pos);
-  }
-  
-  // 设置夹爪目标
-  gripper_goal_ = req.gripper_pos;
-  
-  // 设置 Joint6 目标
-  if (arm_control_fsm_ == ArmControlFsm::Arrived) {
-    arm_control_joint_pos_[5] = req.joint6_pos;  // Joint6 是索引 5
-  }
-  
-  ROS_INFO("[PlanAndGripperControl] Gripper and Joint6 control set successfully!");
-  ROS_INFO("[PlanAndGripperControl] All steps completed!");
-  
-  res.call_success = true;
+  bool success_flag = executeMotionToTarget(planandgrippercontrol_target_pose,pitch,roll,10);
+  res.call_success = success_flag;
   return true;
 }
 
@@ -1208,6 +1204,254 @@ bool ArmController::getGoalAndAngleServer(
   
   res.call_success = (res.target_poses.size() > 0);
   return true;
+}
+
+bool ArmController::getCrossGoalAndAngleServer(
+  arm_controller_srvs::getgoalandangle::Request& req,
+  arm_controller_srvs::getgoalandangle::Response& res) {
+
+ROS_INFO("[CROSS_MODE_GET_GOAL_AND_ANGLE] Service called, computing target poses...");
+res.call_success = false;
+
+// 清空输出
+res.target_poses.clear();
+res.pitch_angles.clear();
+res.roll_angles.clear();
+res.pose_names.clear();
+
+//==========================================================================
+// 步骤1：读取参数和解析输入位姿
+//==========================================================================
+double line_x = req.target_pose.pose.position.x;
+double line_y = req.target_pose.pose.position.y;
+double line_z = req.target_pose.pose.position.z;
+
+// 四元数变换
+tf::Quaternion quat_input(
+  req.target_pose.pose.orientation.x,
+  req.target_pose.pose.orientation.y,
+  req.target_pose.pose.orientation.z,
+  req.target_pose.pose.orientation.w
+);
+
+tf::Quaternion rot_y_inv;
+rot_y_inv.setRotation(tf::Vector3(0, 1, 0), M_PI / 2.0);
+tf::Quaternion rot_x_inv;
+rot_x_inv.setRotation(tf::Vector3(1, 0, 0), M_PI / 2.0);
+tf::Quaternion rot_y_180;
+rot_y_180.setRotation(tf::Vector3(0, 1, 0), M_PI);
+tf::Quaternion quat = quat_input * rot_y_inv * rot_x_inv * rot_y_180;
+
+double line_roll_link00, line_pitch_link00, line_yaw_link00;
+tf::Matrix3x3 mat(quat);
+mat.getRPY(line_roll_link00, line_pitch_link00, line_yaw_link00);
+
+double line_pitch = line_pitch_link00;
+double line_yaw = line_yaw_link00;
+double line_roll = line_roll_link00;
+
+// 读取参数
+double mid_sample_start, mid_sample_end, sample_start, sample_end;
+int mid_num_samples, num_samples;
+double angle_step_deg;
+double half_offset_distance = -0.15;
+double mid_offset_distance = -0.15;
+
+nh_.param("test/mid_sample_start", mid_sample_start, -1.0);
+nh_.param("test/mid_sample_end", mid_sample_end, 0.5);
+nh_.param("test/mid_num_samples", mid_num_samples, 50);
+nh_.param("test/angle_step_deg", angle_step_deg, 45.0);
+nh_.param("test/num_samples", num_samples, 50);
+nh_.param("test/sample_start", sample_start, -1.0);
+nh_.param("test/sample_end", sample_end, 0.0);
+
+// 计算方向向量
+tf::Vector3 x_axis(1.0, 0.0, 0.0);
+tf::Vector3 rotated_direction = tf::quatRotate(quat, x_axis);
+double origin_direction_x = rotated_direction.x();
+double origin_direction_y = rotated_direction.y();
+double origin_direction_z = rotated_direction.z();
+
+// 使用TF的四元数来实现90度坐标系旋转
+// 创建一个绕Y轴旋转90度的四元数
+tf::Quaternion rotation_transform_left;
+rotation_transform_left.setRPY(0, M_PI/2, 0);  // Roll=0, Pitch=90度, Yaw=0
+tf::Quaternion rotation_transform_right;
+rotation_transform_right.setRPY(0, 0, M_PI/2);  // Roll=0, Pitch=0度, Yaw=90度
+
+// 应用变换得到旋转轴
+tf::Vector3 rotation_axis_vec_left = tf::quatRotate(rotation_transform_left, rotated_direction);
+double rotation_axis_left_x = rotation_axis_vec_left.x();
+double rotation_axis_left_y = rotation_axis_vec_left.y();
+double rotation_axis_left_z = rotation_axis_vec_left.z();
+tf::Vector3 rotation_axis_vec_right = tf::quatRotate(rotation_transform_right, rotated_direction);
+double rotation_axis_right_x = rotation_axis_vec_right.x();
+double rotation_axis_right_y = rotation_axis_vec_right.y();
+double rotation_axis_right_z = rotation_axis_vec_right.z();
+// 计算平移轴
+// Eigen::Matrix3d R_yaw = Eigen::AngleAxisd(line_yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+// Eigen::Matrix3d R_pitch = Eigen::AngleAxisd(line_pitch, Eigen::Vector3d::UnitY()).toRotationMatrix();
+// Eigen::Matrix3d R_roll = Eigen::AngleAxisd(line_roll, Eigen::Vector3d::UnitX()).toRotationMatrix();
+// Eigen::Matrix3d R_total = R_yaw * R_pitch * R_roll;
+// Eigen::Vector3d original_y_axis(0.0, 1.0, 0.0);
+// Eigen::Vector3d translation_axis_vec = R_total * original_y_axis;
+
+//==========================================================================
+// 步骤2：生成5条直线
+//==========================================================================
+Line3D original_line;
+original_line.point = Eigen::Vector3d(line_x, line_y, line_z);
+original_line.direction = Eigen::Vector3d(origin_direction_x, origin_direction_y, origin_direction_z).normalized();
+
+Eigen::Vector3d rotation_center(line_x, line_y, line_z);
+Eigen::Vector3d rotation_axis_left(rotation_axis_left_x, rotation_axis_left_y, rotation_axis_left_z);
+Eigen::Vector3d rotation_axis_right(rotation_axis_right_x, rotation_axis_right_y, rotation_axis_right_z);
+Eigen::Vector3d base_point = original_line.point;
+Eigen::Vector3d reference_point_mid = base_point + mid_offset_distance * original_line.direction;
+
+Line3D line_mid = original_line;
+double angle_step_rad_1 = angle_step_deg * M_PI / 180.0;
+Line3D line_left1 = rotateLine(original_line, rotation_center, rotation_axis_left, angle_step_rad_1);
+double angle_step_rad_2 = (360.0 - angle_step_deg) * M_PI / 180.0;
+Line3D line_left2 = rotateLine(original_line, rotation_center, rotation_axis_right, angle_step_rad_2);
+Line3D line_right1 = rotateLine(original_line, rotation_center, rotation_axis_left, angle_step_rad_1);
+Line3D line_right2 = rotateLine(original_line, rotation_center, rotation_axis_right, angle_step_rad_2);
+
+//==========================================================================
+// 步骤3：计算参考点并检查顺序
+//==========================================================================
+Eigen::Vector3d mid_direction = line_mid.direction.normalized();
+Eigen::Vector3d left_direction_1 = line_left1.direction.normalized();
+Eigen::Vector3d left_direction_2 = line_left2.direction.normalized();
+Eigen::Vector3d right_direction_1 = line_right1.direction.normalized();
+Eigen::Vector3d right_direction_2 = line_right2.direction.normalized();
+
+// Eigen::Vector3d reference_point_out1 = base_point + translation_axis_vec * distance_1;
+// Eigen::Vector3d reference_point_out2 = base_point + translation_axis_vec * distance_2;
+Eigen::Vector3d reference_point_left1 = base_point + half_offset_distance * left_direction_1;
+Eigen::Vector3d reference_point_left2 = base_point + half_offset_distance * left_direction_2;
+Eigen::Vector3d reference_point_right1 = base_point + half_offset_distance * right_direction_1;
+Eigen::Vector3d reference_point_right2 = base_point + half_offset_distance * right_direction_2;
+
+// 检查并调整顺序
+// Eigen::Vector3d vec_mid_to_out1 = reference_point_out1 - reference_point_mid;
+// Eigen::Vector3d vec_mid_to_half1 = reference_point_half1 - reference_point_mid;
+// Eigen::Vector3d vec_mid_to_half2 = reference_point_half2 - reference_point_mid;
+
+// double dot_out1_half1 = vec_mid_to_out1.dot(vec_mid_to_half1);
+// double dot_out1_half2 = vec_mid_to_out1.dot(vec_mid_to_half2);
+
+// bool need_swap = (dot_out1_half2 > dot_out1_half1);
+// if (need_swap) {
+//   std::swap(reference_point_half1, reference_point_half2);
+//   std::swap(half_direction_1, half_direction_2);
+//   std::swap(line_half1, line_half2);
+// }
+
+// 创建以参考点为起点的直线
+Line3D line_mid_sampled;
+line_mid_sampled.point = reference_point_mid;
+line_mid_sampled.direction = mid_direction;
+
+Line3D line_left1_sampled;
+line_left1_sampled.point = reference_point_left1;
+line_left1_sampled.direction = left_direction_1;
+
+Line3D line_left2_sampled;
+line_left2_sampled.point = reference_point_left2;
+line_left2_sampled.direction = left_direction_2;
+
+Line3D line_right1_sampled;
+line_right1_sampled.point = reference_point_right1;
+line_right1_sampled.direction = right_direction_1;
+
+Line3D line_right2_sampled;
+line_right2_sampled.point = reference_point_right2;
+line_right2_sampled.direction = right_direction_2;
+
+
+
+//==========================================================================
+// 步骤4：采样并检测可达性
+//==========================================================================
+double pitch_mid = 0.0, roll_mid = 0.0;
+double pitch_left1 = 0.0, roll_left1 = 0.0;
+double pitch_left2 = 0.0, roll_left2 = 0.0;
+double pitch_right1 = 0.0, roll_right1 = 0.0;
+double pitch_right2 = 0.0, roll_right2 = 0.0;
+
+std::vector<geometry_msgs::PoseStamped> reachable_poses_mid = 
+    sampleAndCheckReachability(line_mid_sampled, mid_sample_start, mid_sample_end, mid_num_samples, pitch_mid, roll_mid);
+
+std::vector<geometry_msgs::PoseStamped> reachable_poses_left1 = 
+    sampleAndCheckReachability(line_left1_sampled, sample_start, sample_end, num_samples, pitch_left1, roll_left1);
+
+std::vector<geometry_msgs::PoseStamped> reachable_poses_left2 = 
+    sampleAndCheckReachability(line_left2_sampled, sample_start, sample_end, num_samples, pitch_left2, roll_left2);
+
+std::vector<geometry_msgs::PoseStamped> reachable_poses_right1 = 
+    sampleAndCheckReachability(line_right1_sampled, sample_start, sample_end, num_samples, pitch_right1, roll_right1);
+
+std::vector<geometry_msgs::PoseStamped> reachable_poses_right2 = 
+    sampleAndCheckReachability(line_right2_sampled, sample_start, sample_end, num_samples, pitch_right2, roll_right2);
+
+ROS_INFO("[CROSS_MODE_GET_GOAL_AND_ANGLE] Reachable poses: MID=%zu, LEFT1=%zu, LEFT2=%zu, RIGHT1=%zu, RIGHT2=%zu",
+         reachable_poses_mid.size(), reachable_poses_left1.size(), reachable_poses_left2.size(),
+         reachable_poses_right1.size(), reachable_poses_right2.size());
+
+// 排序
+double target_distance, mid_target_distance;
+nh_.param("test/target_distance", target_distance, 0.2);
+nh_.param("test/mid_target_distance", mid_target_distance, 0.2);
+
+reachable_poses_mid = sortPosesByDistanceToPoint(reachable_poses_mid, reference_point_mid, mid_direction, mid_target_distance);
+reachable_poses_left1 = sortPosesByDistanceToPoint(reachable_poses_left1, reference_point_left1, left_direction_1, target_distance);
+reachable_poses_left2 = sortPosesByDistanceToPoint(reachable_poses_left2, reference_point_left2, left_direction_2, target_distance);
+reachable_poses_right1 = sortPosesByDistanceToPoint(reachable_poses_right1, reference_point_right1, right_direction_1, target_distance);
+reachable_poses_right2 = sortPosesByDistanceToPoint(reachable_poses_right2, reference_point_right2, right_direction_2, target_distance);
+
+//==========================================================================
+// 构造响应：按顺序 [MID, LEFT1, LEFT2, RIGHT1, RIGHT2]
+//==========================================================================
+if (!reachable_poses_mid.empty()) {
+  res.target_poses.push_back(reachable_poses_mid[0].pose);
+  res.pitch_angles.push_back(pitch_mid);
+  res.roll_angles.push_back(roll_mid);
+  res.pose_names.push_back("MID");
+}
+
+if (!reachable_poses_left1.empty()) {
+  res.target_poses.push_back(reachable_poses_left1[0].pose);
+  res.pitch_angles.push_back(pitch_left1);
+  res.roll_angles.push_back(roll_left1);
+  res.pose_names.push_back("LEFT1");
+}
+
+if (!reachable_poses_left2.empty()) {
+  res.target_poses.push_back(reachable_poses_left2[0].pose);
+  res.pitch_angles.push_back(pitch_left2);
+  res.roll_angles.push_back(roll_left2);
+  res.pose_names.push_back("LEFT2");
+}
+
+if (!reachable_poses_right1.empty()) {
+  res.target_poses.push_back(reachable_poses_right1[0].pose);
+  res.pitch_angles.push_back(pitch_right1);
+  res.roll_angles.push_back(roll_right1);
+  res.pose_names.push_back("RIGHT1");
+}
+
+if (!reachable_poses_right2.empty()) {
+  res.target_poses.push_back(reachable_poses_right2[0].pose);
+  res.pitch_angles.push_back(pitch_right2);
+  res.roll_angles.push_back(roll_right2);
+  res.pose_names.push_back("RIGHT2");
+}
+
+ROS_INFO("[CROSS_MODE_GET_GOAL_AND_ANGLE] Returning %zu target poses", res.target_poses.size());
+
+  res.call_success = (res.target_poses.size() > 0);
+return true;
 }
 
 geometry_msgs::PoseArray createLineVisualization(const Line3D& line, double t_start, double t_end, int num_points) {
@@ -1783,6 +2027,7 @@ bool ArmController::planToFivePointServer(
   //依次执行 OUT1 -> HALF1 -> MID -> HALF2 -> OUT2
   //由于已经确保 HALF1 和 OUT1 在同一侧，顺序是空间连续的
   //如果某个点为空（不可达），就跳过它继续执行下一个点
+  //安全逻辑：如果 MID 消失，先去默认点再继续执行 HALF2/OUT2
   
   bool last_success = true;  // 跟踪上一步是否成功（或被跳过）
   
@@ -1834,8 +2079,16 @@ bool ArmController::planToFivePointServer(
         ROS_WARN("[PlanToFivePoint] MID execution failed, stopping...");
       }
     } else {
-      ROS_WARN("[PlanToFivePoint] MID has no reachable poses, skipping...");
-      success[2] = true;  // 跳过
+      // MID 消失，先去默认点
+      ROS_WARN("[PlanToFivePoint] MID has no reachable poses, going to default point for safety...");
+      if (!goToDefaultPoint()) {
+        ROS_ERROR("[PlanToFivePoint] Failed to go to default point, stopping...");
+        last_success = false;
+        success[2] = false;
+      } else {
+        ROS_INFO("[PlanToFivePoint] Successfully moved to default point");
+        success[2] = true;  // 标记为成功，继续执行
+      }
     }
   }
   
@@ -1887,7 +2140,7 @@ bool ArmController::planToFivePointServer(
   return true;
 }
 
-bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose) {
+bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose, const double& joint6_pos, const bool& use_manual_joint6) {
   ROS_INFO("[PlanToTargetPose] Planning to target position: (%.3f, %.3f, %.3f)",
            target_pose.position.x,
            target_pose.position.y,
@@ -1946,6 +2199,9 @@ bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose) {
   // 设置目标位姿和关节角
   ee_pose_goal_ = target_pose_eigen;
   arm_joint_goal_ = target_joint_pos;
+  if (use_manual_joint6){
+    arm_joint_goal_[5] = joint6_pos;
+  }
   
   // 计算轨迹时间（基于距离和速度）
   plan_max_tick_ = static_cast<long unsigned int>(
@@ -1962,7 +2218,29 @@ bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose) {
   ROS_INFO("[PlanToTargetPose] Motion plan generated. Duration: %lu ticks (%.2f seconds)",
            plan_max_tick_, plan_max_tick_ * control_period_);
   
-  return true;
+  // 等待机械臂执行到位（execute_process_ == 1.0 表示到位）
+  ros::Rate rate(1.0 / control_period_);
+  double timeout = (plan_max_tick_ * control_period_) + 5.0;  // 预计时间 + 5秒超时
+  ros::Time start_time = ros::Time::now();
+  
+  while (ros::ok()) {
+    // 检查是否超时
+    if ((ros::Time::now() - start_time).toSec() > timeout) {
+      ROS_WARN("[PlanToTargetPose] Timeout waiting for arm to reach target position");
+      return false;
+    }
+    
+    // 检查是否到位
+    if (arm_control_fsm_ == ArmControlFsm::Arrived ) {
+      ROS_INFO("[PlanToTargetPose] Arm reached target position and stabilized");
+      return true;
+    }
+    
+    ros::spinOnce();
+    rate.sleep();
+  }
+  
+  return false;
 }
 void ArmController::imuCallback(const sensor_msgs::Imu::ConstPtr& imu) {
   // tf2::Vector3 gravity_world(0, 0, -9.81);
@@ -1981,41 +2259,41 @@ void ArmController::executeProcessCallback(const std_msgs::Float64::ConstPtr& ms
 }
 
 bool ArmController::controlJoint6AndGripper(double gripper_pos, double joint6_pos) {
-  ROS_INFO("[ControlJoint6AndGripper] Setting Joint6 to: %.3f rad (%.1f deg), Gripper to: %.3f",
-           joint6_pos, joint6_pos * 180.0 / M_PI, gripper_pos);
+  // ROS_INFO("[ControlJoint6AndGripper] Setting Joint6 to: %.3f rad (%.1f deg), Gripper to: %.3f",
+  //          joint6_pos, joint6_pos * 180.0 / M_PI, gripper_pos);
   
-  // 检查 Joint6 角度范围
-  if (joint6_pos < -3.14 || joint6_pos > 3.14) {
-    ROS_ERROR("[ControlJoint6AndGripper] Invalid Joint6 position: %.3f rad (valid range: -3.14 to 3.14)",
-              joint6_pos);
-    return false;
-  }
+  // // 检查 Joint6 角度范围
+  // if (joint6_pos < -3.14 || joint6_pos > 3.14) {
+  //   ROS_ERROR("[ControlJoint6AndGripper] Invalid Joint6 position: %.3f rad (valid range: -3.14 to 3.14)",
+  //             joint6_pos);
+  //   return false;
+  // }
   
-  // 检查夹爪位置范围
-  if (gripper_pos < -0.85 || gripper_pos > 0.0) {
-    ROS_WARN("[ControlJoint6AndGripper] Gripper position %.3f is out of typical range (0.0 to -0.85)",
-             gripper_pos);
-  }
+  // // 检查夹爪位置范围
+  // if (gripper_pos < -0.85 || gripper_pos > 0.0) {
+  //   ROS_WARN("[ControlJoint6AndGripper] Gripper position %.3f is out of typical range (0.0 to -0.85)",
+  //            gripper_pos);
+  // }
   
-  // 如果不在 Arrived 或 PlanMove 状态，需要初始化机械臂位置
-  if (arm_control_fsm_ != ArmControlFsm::Arrived && 
-      arm_control_fsm_ != ArmControlFsm::PlanMove) {
-    arm_control_joint_pos_ = low_state_.getQ();  // 保持当前位置
-    arm_control_joint_vel_.setZero();
-    ROS_INFO("[ControlJoint6AndGripper] Initialized arm position from current state");
-  }
+  // // 如果不在 Arrived 或 PlanMove 状态，需要初始化机械臂位置
+  // if (arm_control_fsm_ != ArmControlFsm::Arrived && 
+  //     arm_control_fsm_ != ArmControlFsm::PlanMove) {
+  //   arm_control_joint_pos_ = low_state_.getQ();  // 保持当前位置
+  //   arm_control_joint_vel_.setZero();
+  //   ROS_INFO("[ControlJoint6AndGripper] Initialized arm position from current state");
+  // }
   
-  // 设置夹爪目标
-  gripper_goal_ = gripper_pos;
+  // // 设置夹爪目标
+  // gripper_goal_ = gripper_pos;
   
-  // 设置 Joint6 目标
-  arm_control_joint_pos_[5] = joint6_pos;  // Joint6 是索引 5
+  // // 设置 Joint6 目标
+  // arm_control_joint_pos_[5] = joint6_pos;  // Joint6 是索引 5
   
-  // 切换到 Arrived 状态
-  setArmControlFsm(ArmControlFsm::Arrived);
+  // // 切换到 Arrived 状态
+  // setArmControlFsm(ArmControlFsm::Arrived);
   
-  ROS_INFO("[ControlJoint6AndGripper] Control command sent successfully");
-  return true;
+  // ROS_INFO("[ControlJoint6AndGripper] Control command sent successfully");
+  return false;
 }
 
 std::vector<geometry_msgs::PoseStamped> ArmController::sortPosesByDistanceToPoint(
@@ -2067,6 +2345,45 @@ std::vector<geometry_msgs::PoseStamped> ArmController::sortPosesByDistanceToPoin
   return sorted_poses;
 }
 
+// ============================================================================
+// 辅助函数：移动到默认点（用于安全过渡）
+// ============================================================================
+
+bool ArmController::goToDefaultPoint() {
+  ROS_INFO("[GoToDefaultPoint] Moving to default point for safe transition...");
+  
+  // 调用 planToDefaultServer
+  arm_controller_srvs::PlanToDefault::Request req;
+  arm_controller_srvs::PlanToDefault::Response res;
+  req.plan_to_default = true;
+  
+  bool success = planToDefaultServer(req, res);
+  
+  if (!success || !res.call_success) {
+    ROS_ERROR("[GoToDefaultPoint] Failed to plan to default point");
+    return false;
+  }
+  
+  // 等待到达默认点
+  ros::Rate rate(10);  // 10Hz
+  int timeout_count = 0;
+  const int max_timeout = 100;  // 10秒超时
+  
+  while (ros::ok() && arm_control_fsm_ != ArmControlFsm::Arrived && timeout_count < max_timeout) {
+    rate.sleep();
+    timeout_count++;
+  }
+  
+  if (timeout_count >= max_timeout) {
+    ROS_WARN("[GoToDefaultPoint] Timeout waiting for arrival at default point");
+    return false;
+  }
+  
+  ROS_INFO("[GoToDefaultPoint] Arrived at default point");
+  ros::Duration(0.5).sleep();  // 稍微停顿
+  return true;
+}
+
 bool ArmController::executeMotionToTarget(const geometry_msgs::Pose& target_pose,
                                           double pitch,
                                           double roll,
@@ -2075,54 +2392,72 @@ bool ArmController::executeMotionToTarget(const geometry_msgs::Pose& target_pose
   //          target_pose.position.x, target_pose.position.y, target_pose.position.z);
   
   // 1. 规划到目标位姿
-  bool success_plan = planToTargetPose(target_pose);
+  // 移动加爪
+  ros::Rate rate(50);  // 10Hz
+  double gripper_pos = pitch;
+
+  if (gripper_pos < -0.85 || gripper_pos > 0.0) {
+    ROS_WARN("[ControlJoint6AndGripper] Gripper position %.3f is out of typical range (0.0 to -0.85)",
+             gripper_pos);
+  }
+  double curr_gripper_pos = low_state_. getGripperQ();
+  for(int i{0};i < 50; ++i){
+    gripper_goal_=curr_gripper_pos + static_cast<double>(i)/50*(pitch - curr_gripper_pos);
+    rate.sleep();
+  }
+  if (roll < -3.14 || roll > 3.14) {
+    ROS_ERROR("[ControlJoint6AndGripper] Invalid Joint6 position: %.3f rad (valid range: -3.14 to 3.14)",
+    roll);
+    return false;
+  }
+
+  bool success_plan = planToTargetPose(target_pose, roll, true);
   
   if (!success_plan) {
     // ROS_ERROR("[ExecuteMotionToTarget] Failed to plan motion to target pose");
     return false;
   }
+
+  // // 2. 等待机械臂到达目标位置
+  // // ROS_INFO("[ExecuteMotionToTarget] Waiting for arm to reach target position...");
+  // int timeout_count = 0;
+  // int max_timeout = static_cast<int>(timeout_seconds * 10);  // 转换为循环次数
   
-  // 2. 等待机械臂到达目标位置
-  // ROS_INFO("[ExecuteMotionToTarget] Waiting for arm to reach target position...");
-  ros::Rate rate(10);  // 10Hz
-  int timeout_count = 0;
-  int max_timeout = static_cast<int>(timeout_seconds * 10);  // 转换为循环次数
+  // while (ros::ok() && arm_control_fsm_ != ArmControlFsm::Arrived && timeout_count < max_timeout) {
+  //   rate.sleep();
+  //   timeout_count++;
+  // }
   
-  while (ros::ok() && arm_control_fsm_ != ArmControlFsm::Arrived && timeout_count < max_timeout) {
-    rate.sleep();
-    timeout_count++;
-  }
+  // if (timeout_count >= max_timeout) {
+  //   // ROS_WARN("[ExecuteMotionToTarget] Timeout waiting for arm to arrive (%.1f seconds)", timeout_seconds);
+  //   return false;
+  // }
   
-  if (timeout_count >= max_timeout) {
-    // ROS_WARN("[ExecuteMotionToTarget] Timeout waiting for arm to arrive (%.1f seconds)", timeout_seconds);
-    return false;
-  }
+  // // ROS_INFO("[ExecuteMotionToTarget] Arm arrived at target position");
   
-  // ROS_INFO("[ExecuteMotionToTarget] Arm arrived at target position");
+  // // 3. 根据 execute_process_ 信号决定是否执行夹爪控制
+  // // ROS_INFO("[ExecuteMotionToTarget] execute_process_ status: %s", 
+  // //          execute_process_ ? "ENABLED" : "DISABLED");
   
-  // 3. 根据 execute_process_ 信号决定是否执行夹爪控制
-  // ROS_INFO("[ExecuteMotionToTarget] execute_process_ status: %s", 
-  //          execute_process_ ? "ENABLED" : "DISABLED");
-  
-  if (execute_process_ >= 1.0) {
-    // ROS_INFO("[ExecuteMotionToTarget] Executing gripper control (pitch: %.3f rad, roll: %.3f rad)...",
-    //          pitch, roll);
-    bool success_gripper = controlJoint6AndGripper(pitch, roll);
+  // if (execute_process_ >= 1.0) {
+  //   // ROS_INFO("[ExecuteMotionToTarget] Executing gripper control (pitch: %.3f rad, roll: %.3f rad)...",
+  //   //          pitch, roll);
+  //   bool success_gripper = controlJoint6AndGripper(pitch, roll);
     
-    if (!success_gripper) {
-      // ROS_ERROR("[ExecuteMotionToTarget] Gripper control failed");
-      return false;
-    }
+  //   if (!success_gripper) {
+  //     // ROS_ERROR("[ExecuteMotionToTarget] Gripper control failed");
+  //     return false;
+  //   }
     
-    // ROS_INFO("[ExecuteMotionToTarget] Gripper control command sent. Waiting 1 second...");
+  //   // ROS_INFO("[ExecuteMotionToTarget] Gripper control command sent. Waiting 1 second...");
     
-    // 等待夹爪动作执行 1 秒
-    ros::Duration(1.0).sleep();
+  //   // 等待夹爪动作执行 1 秒
+  //   ros::Duration(1.0).sleep();
     
-    // ROS_INFO("[ExecuteMotionToTarget] Gripper action completed");
-  } else {
-    // ROS_INFO("[ExecuteMotionToTarget] Skipping gripper control (execute_process is disabled)");
-  }
+  //   // ROS_INFO("[ExecuteMotionToTarget] Gripper action completed");
+  // } else {
+  //   // ROS_INFO("[ExecuteMotionToTarget] Skipping gripper control (execute_process is disabled)");
+  // }
   
   // ROS_INFO("[ExecuteMotionToTarget] Motion execution completed successfully");
   return true;
@@ -2468,6 +2803,80 @@ ArmController::generateRotatedLinesWithSamples(
   }
   
   return results;
+}
+
+// ============================================================================
+// ZED Link to Link00 TF 广播控制
+// ============================================================================
+
+bool ArmController::zedLinkToLink00Server(
+    arm_controller_srvs::zedlinktolink00::Request& req,
+    arm_controller_srvs::zedlinktolink00::Response& res) {
+  
+  res.call_success = false;
+  
+  if (req.enable) {
+    ROS_INFO("[ZedLinkToLink00] Querying TF transform: link00 -> estimated_object");
+    
+    try {
+      // 查询 TF 变换：从 link00 到 estimated_object
+      geometry_msgs::TransformStamped transform_stamped;
+      transform_stamped = tf_buffer_.lookupTransform(
+          "link00",              // 目标坐标系（相对于这个坐标系表示）
+          "estimated_object",    // 源坐标系（要查询的坐标系）
+          ros::Time(0),          // 获取最新的变换
+          ros::Duration(1.0)     // 超时时间：1秒
+      );
+      
+      // 提取并输出坐标信息
+      double pos_x = transform_stamped.transform.translation.x;
+      double pos_y = transform_stamped.transform.translation.y;
+      double pos_z = transform_stamped.transform.translation.z;
+      double ori_x = transform_stamped.transform.rotation.x;
+      double ori_y = transform_stamped.transform.rotation.y;
+      double ori_z = transform_stamped.transform.rotation.z;
+      double ori_w = transform_stamped.transform.rotation.w;
+      
+      ROS_INFO("[ZedLinkToLink00] Transform found:");
+      ROS_INFO("  Position: x=%.4f, y=%.4f, z=%.4f", pos_x, pos_y, pos_z);
+      ROS_INFO("  Orientation (quaternion): x=%.4f, y=%.4f, z=%.4f, w=%.4f", 
+               ori_x, ori_y, ori_z, ori_w);
+      
+      // 转换为 RPY 角度（可选）
+      tf::Quaternion quat(ori_x, ori_y, ori_z, ori_w);
+      tf::Matrix3x3 mat(quat);
+      double roll, pitch, yaw;
+      mat.getRPY(roll, pitch, yaw);
+      
+      ROS_INFO("  Orientation (RPY): roll=%.4f (%.2f°), pitch=%.4f (%.2f°), yaw=%.4f (%.2f°)",
+               roll, roll * 180.0 / M_PI,
+               pitch, pitch * 180.0 / M_PI,
+               yaw, yaw * 180.0 / M_PI);
+      
+      // 填充响应中的 Pose 信息
+      res.transformed_pose.position.x = pos_x;
+      res.transformed_pose.position.y = pos_y;
+      res.transformed_pose.position.z = pos_z;
+      res.transformed_pose.orientation.x = ori_x;
+      res.transformed_pose.orientation.y = ori_y;
+      res.transformed_pose.orientation.z = ori_z;
+      res.transformed_pose.orientation.w = ori_w;
+      
+      res.call_success = true;
+      
+    } catch (tf2::TransformException& ex) {
+      ROS_ERROR("[ZedLinkToLink00] TF lookup failed: %s", ex.what());
+      ROS_ERROR("  Make sure both 'link00' and 'estimated_object' frames exist");
+      ROS_ERROR("  You can check available frames with: rosrun tf tf_echo link00 estimated_object");
+      res.call_success = false;
+    }
+    
+  } else {
+    ROS_INFO("[ZedLinkToLink00] Service disabled (enable=false)");
+    res.call_success = true;
+  }
+  
+  return true;
 }
 
 }  // namespace arm_controller

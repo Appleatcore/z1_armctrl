@@ -42,9 +42,9 @@
         <param name="test/angle_step_deg" value="45.0" />
         <param name="test/target_distance" value="0.10" />
         <!-- Default target pose parameters -->
-        <param name="test/default_target_pose_x" value="0.5" />
+        <param name="test/default_target_pose_x" value="0.6" />
         <param name="test/default_target_pose_y" value="0.0" />
-        <param name="test/default_target_pose_z" value="0.15" />
+        <param name="test/default_target_pose_z" value="0.1" />
         <param name="test/default_target_pose_orientation_x" value="0.0" />
         <param name="test/default_target_pose_orientation_y" value="0.0" />
         <param name="test/default_target_pose_orientation_z" value="0.0" />

@@ -68,7 +68,10 @@ add_service_files(
   getgoalandangle.srv
   zedlinktolink00.srv
   CameraToLink00.srv
+<<<<<<< HEAD
   crossgetgoalandangle.srv
+=======
+>>>>>>> 9f826ecb77558d27c6bfd649da8687298e753c0d
 )
 
 # # Generate actions in the 'action' folder

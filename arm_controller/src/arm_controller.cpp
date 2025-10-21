@@ -319,8 +319,12 @@ void ArmController::initServers() {
       "zed_link_to_link00", &ArmController::zedLinkToLink00Server, this);
   camera_to_link00_server_ = nh_.advertiseService(
     "camera_to_link00", &ArmController::cameraToLink00Server, this);
+<<<<<<< HEAD
   cross_get_goal_and_angle_server_ = nh_.advertiseService(
     "cross_get_goal_and_angle", &ArmController::getCrossGoalAndAngleServer, this);
+=======
+  
+>>>>>>> 9f826ecb77558d27c6bfd649da8687298e753c0d
   // 订阅执行控制信号（从机械臂控制器获取状态）
   execute_process_sub_ = nh_.subscribe<std_msgs::Float64>(
       "/arm_controller/execute_process", 1, &ArmController::executeProcessCallback, this);
@@ -777,6 +781,14 @@ bool ArmController::back2HomeServer(
     arm_controller_srvs::BackToHome::Request& req,
     arm_controller_srvs::BackToHome::Response& res) {
   res.call_success = false;
+
+  arm_controller_srvs::PlanToDefault::Request plan_to_default_req;
+  arm_controller_srvs::PlanToDefault::Response plan_to_default_res;
+
+  planToDefaultServer(plan_to_default_req, plan_to_default_res);
+  if (!plan_to_default_res.call_success) {
+    return false;
+  }
   Eigen::Matrix4d start_ee_pose =
       arm_model_->forwardKinematics(low_state_.getQ());
   Eigen::Matrix<double, 6, 1> start_joint_pos = low_state_.getQ();
@@ -963,15 +975,25 @@ bool ArmController::gripperControlServer(
 bool ArmController::planAndGripperControlServer(
     arm_controller_srvs::planandgrippercontrol::Request& req,
     arm_controller_srvs::planandgrippercontrol::Response& res) {
+<<<<<<< HEAD
   // res.call_success = false;
+=======
+  res.call_success = false;
+>>>>>>> 9f826ecb77558d27c6bfd649da8687298e753c0d
   
   // 从 ROS 参数服务器读取默认目标位姿
   geometry_msgs::Pose planandgrippercontrol_target_pose=req.target_pose;
   float pitch = req.gripper_pos;
   float roll = req.joint6_pos;
+<<<<<<< HEAD
   
   bool success_flag = executeMotionToTarget(planandgrippercontrol_target_pose,pitch,roll,10);
   res.call_success = success_flag;
+=======
+  
+  bool success_flag = executeMotionToTarget(planandgrippercontrol_target_pose,pitch,roll,10);
+  
+>>>>>>> 9f826ecb77558d27c6bfd649da8687298e753c0d
   return true;
 }
 
@@ -2412,6 +2434,7 @@ bool ArmController::executeMotionToTarget(const geometry_msgs::Pose& target_pose
   }
 
   bool success_plan = planToTargetPose(target_pose, roll, true);
+<<<<<<< HEAD
   
   if (!success_plan) {
     // ROS_ERROR("[ExecuteMotionToTarget] Failed to plan motion to target pose");
@@ -2435,6 +2458,31 @@ bool ArmController::executeMotionToTarget(const geometry_msgs::Pose& target_pose
   
   // // ROS_INFO("[ExecuteMotionToTarget] Arm arrived at target position");
   
+=======
+  
+  if (!success_plan) {
+    // ROS_ERROR("[ExecuteMotionToTarget] Failed to plan motion to target pose");
+    return false;
+  }
+
+  // // 2. 等待机械臂到达目标位置
+  // // ROS_INFO("[ExecuteMotionToTarget] Waiting for arm to reach target position...");
+  // int timeout_count = 0;
+  // int max_timeout = static_cast<int>(timeout_seconds * 10);  // 转换为循环次数
+  
+  // while (ros::ok() && arm_control_fsm_ != ArmControlFsm::Arrived && timeout_count < max_timeout) {
+  //   rate.sleep();
+  //   timeout_count++;
+  // }
+  
+  // if (timeout_count >= max_timeout) {
+  //   // ROS_WARN("[ExecuteMotionToTarget] Timeout waiting for arm to arrive (%.1f seconds)", timeout_seconds);
+  //   return false;
+  // }
+  
+  // // ROS_INFO("[ExecuteMotionToTarget] Arm arrived at target position");
+  
+>>>>>>> 9f826ecb77558d27c6bfd649da8687298e753c0d
   // // 3. 根据 execute_process_ 信号决定是否执行夹爪控制
   // // ROS_INFO("[ExecuteMotionToTarget] execute_process_ status: %s", 
   // //          execute_process_ ? "ENABLED" : "DISABLED");

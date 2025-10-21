@@ -135,11 +135,8 @@ class ArmController {
                                    arm_controller_srvs::planandgrippercontrol::Response& res);
   bool getGoalAndAngleServer(arm_controller_srvs::getgoalandangle::Request& req,
                              arm_controller_srvs::getgoalandangle::Response& res);
-<<<<<<< HEAD
   bool getCrossGoalAndAngleServer(arm_controller_srvs::getgoalandangle::Request& req,
                              arm_controller_srvs::getgoalandangle::Response& res);
-=======
->>>>>>> 9f826ecb77558d27c6bfd649da8687298e753c0d
   bool zedLinkToLink00Server(arm_controller_srvs::zedlinktolink00::Request& req,
                              arm_controller_srvs::zedlinktolink00::Response& res);
   bool cameraToLink00Server(arm_controller_srvs::CameraToLink00::Request& req,
@@ -387,11 +384,7 @@ class ArmController {
       plan_server_, search_plan_server_, rotation_search_plan_server_,
       plan_to_default_server_, js_control_server_, gripper_control_server_,
       plan_to_five_point_server_, plan_and_gripper_control_server_,
-<<<<<<< HEAD
       get_goal_and_angle_server_, cross_get_goal_and_angle_server_,zed_link_to_link00_server_,camera_to_link00_server_;
-=======
-      get_goal_and_angle_server_, zed_link_to_link00_server_,camera_to_link00_server_;
->>>>>>> 9f826ecb77558d27c6bfd649da8687298e753c0d
   // action server
   // std::unique_ptr<actionlib::SimpleActionServer<arm_controller::PlanAction>>
   //     plan_action_server_;

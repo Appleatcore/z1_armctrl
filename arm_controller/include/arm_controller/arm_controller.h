@@ -137,6 +137,8 @@ class ArmController {
                              arm_controller_srvs::getgoalandangle::Response& res);
   bool getCrossGoalAndAngleServer(arm_controller_srvs::getgoalandangle::Request& req,
                              arm_controller_srvs::getgoalandangle::Response& res);
+  bool PlanTouchGoalAndAngleServer(arm_controller_srvs::getgoalandangle::Request& req,
+                             arm_controller_srvs::getgoalandangle::Response& res);
   bool zedLinkToLink00Server(arm_controller_srvs::zedlinktolink00::Request& req,
                              arm_controller_srvs::zedlinktolink00::Response& res);
   bool cameraToLink00Server(arm_controller_srvs::CameraToLink00::Request& req,
@@ -347,7 +349,7 @@ class ArmController {
   // ros
   ros::NodeHandle nh_;
   std::vector<std::string> arm_joint_names_{"joint1", "joint2", "joint3",
-                                            "joint4", "joint5", "joint6"};
+                                            "joint4", "joint5", "joint6", "jointGripper"};
   sensor_msgs::JointState joint_state_msgs_;
   sensor_msgs::JointState cmd_joint_state_msgs_;
   geometry_msgs::PoseStamped ee_pose_msg_;

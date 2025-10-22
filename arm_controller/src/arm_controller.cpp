@@ -242,14 +242,14 @@ void ArmController::launch() {
 
 void ArmController::initSubsAndPubs() {
   joint_state_msgs_.header.frame_id = "link00";
-  joint_state_msgs_.position.assign(6, 0);
-  joint_state_msgs_.effort.assign(6, 0);
-  joint_state_msgs_.velocity.assign(6, 0);
+  joint_state_msgs_.position.assign(arm_joint_names_.size(), 0);
+  joint_state_msgs_.effort.assign(arm_joint_names_.size(), 0);
+  joint_state_msgs_.velocity.assign(arm_joint_names_.size(), 0);
   joint_state_msgs_.name = arm_joint_names_;
   cmd_joint_state_msgs_.header.frame_id = "link00";
-  cmd_joint_state_msgs_.position.assign(6, 0);
-  cmd_joint_state_msgs_.effort.assign(6, 0);
-  cmd_joint_state_msgs_.velocity.assign(6, 0);
+  cmd_joint_state_msgs_.position.assign(arm_joint_names_.size(), 0);
+  cmd_joint_state_msgs_.effort.assign(arm_joint_names_.size(), 0);
+  cmd_joint_state_msgs_.velocity.assign(arm_joint_names_.size(), 0);
   cmd_joint_state_msgs_.name = arm_joint_names_;
   ee_pose_msg_.header.frame_id = "link00";
   arm_joint_states_pub_ =
@@ -347,6 +347,13 @@ void ArmController::publishStates() {
         0.0128 * low_cmd_.kd[i] * (low_cmd_.dq[i] - low_state_.dq[i]) +
         low_cmd_.tau[i];
   }
+  joint_state_msgs_.position[6] = low_state_.getGripperQ();
+  joint_state_msgs_.velocity[6] = low_state_.getGripperQd();
+  joint_state_msgs_.effort[6] = low_state_.getGripperTau();
+  cmd_joint_state_msgs_.position[6] = low_state_.getGripperQ();
+  cmd_joint_state_msgs_.velocity[6] = low_state_.getGripperQd();
+  cmd_joint_state_msgs_.effort[6] = low_state_.getGripperTau();
+  
   ee_pose_msg_.pose.position.x = low_state_.endPosture[3];
   ee_pose_msg_.pose.position.y = low_state_.endPosture[4];
   ee_pose_msg_.pose.position.z = low_state_.endPosture[5];
@@ -1411,7 +1418,7 @@ reachable_poses_right1 = sortPosesByDistanceToPoint(reachable_poses_right1, refe
 reachable_poses_right2 = sortPosesByDistanceToPoint(reachable_poses_right2, reference_point_right2, right_direction_2, target_distance);
 
 //==========================================================================
-// 构造响应：按顺序 [MID, LEFT1, LEFT2, RIGHT1, RIGHT2]
+// 构造响应：按顺序 [MID, LEFT1, RIGHT1, RIGHT2, LEFT2]
 //==========================================================================
 if (!reachable_poses_mid.empty()) {
   res.target_poses.push_back(reachable_poses_mid[0].pose);
@@ -1427,12 +1434,6 @@ if (!reachable_poses_left1.empty()) {
   res.pose_names.push_back("LEFT1");
 }
 
-if (!reachable_poses_left2.empty()) {
-  res.target_poses.push_back(reachable_poses_left2[0].pose);
-  res.pitch_angles.push_back(pitch_left2);
-  res.roll_angles.push_back(roll_left2);
-  res.pose_names.push_back("LEFT2");
-}
 
 if (!reachable_poses_right1.empty()) {
   res.target_poses.push_back(reachable_poses_right1[0].pose);
@@ -1448,11 +1449,315 @@ if (!reachable_poses_right2.empty()) {
   res.pose_names.push_back("RIGHT2");
 }
 
+if (!reachable_poses_left2.empty()) {
+  res.target_poses.push_back(reachable_poses_left2[0].pose);
+  res.pitch_angles.push_back(pitch_left2);
+  res.roll_angles.push_back(roll_left2);
+  res.pose_names.push_back("LEFT2");
+}
+
 ROS_INFO("[CROSS_MODE_GET_GOAL_AND_ANGLE] Returning %zu target poses", res.target_poses.size());
 
   res.call_success = (res.target_poses.size() > 0);
 return true;
 }
+
+bool ArmController::PlanTouchGoalAndAngleServer(
+  arm_controller_srvs::getgoalandangle::Request& req,
+  arm_controller_srvs::getgoalandangle::Response& res) {
+
+  ROS_INFO("[PlanTouchGoalAndAngleServer] Service called, computing target poses...");
+  res.call_success = false;
+
+  // 清空输出
+  res.target_poses.clear();
+  res.pitch_angles.clear();
+  res.roll_angles.clear();
+  res.pose_names.clear();
+
+  //==========================================================================
+  // 步骤0：获取 camera_link 到 link00 的 TF 变换
+  //==========================================================================
+  geometry_msgs::TransformStamped camera_to_link00_transform;
+  Eigen::Vector3d pen_offset_in_link00(0.0, 0.0, 0.0);  // 默认无偏移
+  
+  try {
+    // 查询 camera_link 到 link00 的变换
+    camera_to_link00_transform = tf_buffer_.lookupTransform(
+        "link00", "camera_link", ros::Time(0), ros::Duration(1.0));
+    
+    // 定义笔相对于 camera_link 的偏移 (0.0, 0.05, 0.0)
+    geometry_msgs::Vector3Stamped pen_offset_camera;
+    pen_offset_camera.header.frame_id = "camera_link";
+    pen_offset_camera.header.stamp = ros::Time::now();
+    pen_offset_camera.vector.x = 0.0;
+    pen_offset_camera.vector.y = -0.05;
+    pen_offset_camera.vector.z = 0.0;
+    
+    // 将偏移向量从 camera_link 变换到 link00
+    geometry_msgs::Vector3Stamped pen_offset_link00;
+    tf2::doTransform(pen_offset_camera, pen_offset_link00, camera_to_link00_transform);
+    
+    // 转换为 Eigen 向量
+    pen_offset_in_link00 = Eigen::Vector3d(
+        pen_offset_link00.vector.x,
+        pen_offset_link00.vector.y,
+        pen_offset_link00.vector.z
+    );
+    
+    ROS_INFO("[PlanTouchGoalAndAngleServer] Pen offset in link00: [%.4f, %.4f, %.4f]",
+             pen_offset_in_link00.x(), pen_offset_in_link00.y(), pen_offset_in_link00.z());
+    
+    // 发布 pen_offset_link 虚拟坐标系用于可视化
+    // 该坐标系相对于 camera_link 偏移 (0.0, 0.05, 0.0)，方向与 camera_link 一致
+    tf::Transform pen_offset_transform;
+    pen_offset_transform.setOrigin(tf::Vector3(0.0, -0.05, 0.0));
+    pen_offset_transform.setRotation(tf::Quaternion(0, 0, 0, 1));  // 无旋转
+    tf_broadcaster_.sendTransform(
+        tf::StampedTransform(pen_offset_transform, ros::Time::now(), "camera_link", "pen_offset_link")
+    );
+    
+    ROS_DEBUG("[PlanTouchGoalAndAngleServer] Published TF frame 'pen_offset_link' relative to 'camera_link'");
+    
+  } catch (tf2::TransformException& ex) {
+    ROS_WARN("[PlanTouchGoalAndAngleServer] Could not get camera_link to link00 transform: %s", ex.what());
+    ROS_WARN("[PlanTouchGoalAndAngleServer] Using default offset (0, -0.05, 0) in link00 frame");
+    // 如果无法获取 TF，使用默认偏移（向下 0.05m）
+    pen_offset_in_link00 = Eigen::Vector3d(0.0, -0.05, 0.0);
+  }
+
+  //==========================================================================
+  // 步骤1：读取参数和解析输入位姿
+  //==========================================================================
+  double line_x = req.target_pose.pose.position.x;
+  double line_y = req.target_pose.pose.position.y;
+  double line_z = req.target_pose.pose.position.z;
+
+  // 四元数变换
+  tf::Quaternion quat_input(
+    req.target_pose.pose.orientation.x,
+    req.target_pose.pose.orientation.y,
+    req.target_pose.pose.orientation.z,
+    req.target_pose.pose.orientation.w
+  );
+
+  tf::Quaternion rot_y_inv;
+  rot_y_inv.setRotation(tf::Vector3(0, 1, 0), M_PI / 2.0);
+  tf::Quaternion rot_x_inv;
+  rot_x_inv.setRotation(tf::Vector3(1, 0, 0), M_PI / 2.0);
+  tf::Quaternion rot_y_180;
+  rot_y_180.setRotation(tf::Vector3(0, 1, 0), M_PI);
+  tf::Quaternion quat = quat_input * rot_y_inv * rot_x_inv * rot_y_180;
+
+  double line_roll_link00, line_pitch_link00, line_yaw_link00;
+  tf::Matrix3x3 mat(quat);
+  mat.getRPY(line_roll_link00, line_pitch_link00, line_yaw_link00);
+
+  double line_pitch = line_pitch_link00;
+  double line_yaw = line_yaw_link00;
+  double line_roll = line_roll_link00;
+
+  // 读取参数
+  double mid_sample_start, mid_sample_end, sample_start, sample_end;
+  int mid_num_samples, num_samples;
+  double angle_step_deg;
+  double half_offset_distance = -0.15;
+  double mid_offset_distance = -0.15;
+
+  nh_.param("test/mid_sample_start", mid_sample_start, -1.0);
+  nh_.param("test/mid_sample_end", mid_sample_end, 0.5);
+  nh_.param("test/mid_num_samples", mid_num_samples, 50);
+  nh_.param("test/angle_step_deg", angle_step_deg, 45.0);
+  nh_.param("test/num_samples", num_samples, 50);
+  nh_.param("test/sample_start", sample_start, -1.0);
+  nh_.param("test/sample_end", sample_end, 0.0);
+
+  // 计算方向向量
+  tf::Vector3 x_axis(1.0, 0.0, 0.0);
+  tf::Vector3 rotated_direction = tf::quatRotate(quat, x_axis);
+  double origin_direction_x = rotated_direction.x();
+  double origin_direction_y = rotated_direction.y();
+  double origin_direction_z = rotated_direction.z();
+
+  // 使用TF的四元数来实现90度坐标系旋转
+  // 创建一个绕Y轴旋转90度的四元数
+  tf::Quaternion rotation_transform_left;
+  rotation_transform_left.setRPY(0, M_PI/2, 0);  // Roll=0, Pitch=90度, Yaw=0
+  tf::Quaternion rotation_transform_right;
+  rotation_transform_right.setRPY(0, 0, M_PI/2);  // Roll=0, Pitch=0度, Yaw=90度
+
+  // 应用变换得到旋转轴
+  tf::Vector3 rotation_axis_vec_left = tf::quatRotate(rotation_transform_left, rotated_direction);
+  double rotation_axis_left_x = rotation_axis_vec_left.x();
+  double rotation_axis_left_y = rotation_axis_vec_left.y();
+  double rotation_axis_left_z = rotation_axis_vec_left.z();
+  tf::Vector3 rotation_axis_vec_right = tf::quatRotate(rotation_transform_right, rotated_direction);
+  double rotation_axis_right_x = rotation_axis_vec_right.x();
+  double rotation_axis_right_y = rotation_axis_vec_right.y();
+  double rotation_axis_right_z = rotation_axis_vec_right.z();
+  // 计算平移轴
+  // Eigen::Matrix3d R_yaw = Eigen::AngleAxisd(line_yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  // Eigen::Matrix3d R_pitch = Eigen::AngleAxisd(line_pitch, Eigen::Vector3d::UnitY()).toRotationMatrix();
+  // Eigen::Matrix3d R_roll = Eigen::AngleAxisd(line_roll, Eigen::Vector3d::UnitX()).toRotationMatrix();
+  // Eigen::Matrix3d R_total = R_yaw * R_pitch * R_roll;
+  // Eigen::Vector3d original_y_axis(0.0, 1.0, 0.0);
+  // Eigen::Vector3d translation_axis_vec = R_total * original_y_axis;
+
+  //==========================================================================
+  // 步骤2：生成5条直线
+  //==========================================================================
+  Line3D original_line;
+  original_line.point = Eigen::Vector3d(line_x, line_y, line_z);
+  original_line.direction = Eigen::Vector3d(origin_direction_x, origin_direction_y, origin_direction_z).normalized();
+
+  Eigen::Vector3d rotation_center(line_x, line_y, line_z);
+  Eigen::Vector3d rotation_axis_left(rotation_axis_left_x, rotation_axis_left_y, rotation_axis_left_z);
+  Eigen::Vector3d rotation_axis_right(rotation_axis_right_x, rotation_axis_right_y, rotation_axis_right_z);
+  Eigen::Vector3d base_point = original_line.point;
+  Eigen::Vector3d reference_point_mid = base_point + mid_offset_distance * original_line.direction;
+
+  Line3D line_mid = original_line;
+  double angle_step_rad_1 = angle_step_deg * M_PI / 180.0;
+  Line3D line_left1 = rotateLine(original_line, rotation_center, rotation_axis_left, angle_step_rad_1);
+  double angle_step_rad_2 = (360.0 - angle_step_deg) * M_PI / 180.0;
+  Line3D line_left2 = rotateLine(original_line, rotation_center, rotation_axis_right, angle_step_rad_2);
+  Line3D line_right1 = rotateLine(original_line, rotation_center, rotation_axis_left, angle_step_rad_1);
+  Line3D line_right2 = rotateLine(original_line, rotation_center, rotation_axis_right, angle_step_rad_2);
+
+  //==========================================================================
+  // 步骤3：计算参考点并检查顺序
+  //==========================================================================
+  Eigen::Vector3d mid_direction = line_mid.direction.normalized();
+  Eigen::Vector3d left_direction_1 = line_left1.direction.normalized();
+  Eigen::Vector3d left_direction_2 = line_left2.direction.normalized();
+  Eigen::Vector3d right_direction_1 = line_right1.direction.normalized();
+  Eigen::Vector3d right_direction_2 = line_right2.direction.normalized();
+
+  // Eigen::Vector3d reference_point_out1 = base_point + translation_axis_vec * distance_1;
+  // Eigen::Vector3d reference_point_out2 = base_point + translation_axis_vec * distance_2;
+
+  // 计算参考点（沿直线方向偏移）
+  Eigen::Vector3d reference_point_left1 = base_point + half_offset_distance * left_direction_1;
+  Eigen::Vector3d reference_point_left2 = base_point + half_offset_distance * left_direction_2;
+  Eigen::Vector3d reference_point_right1 = base_point + half_offset_distance * right_direction_1;
+  Eigen::Vector3d reference_point_right2 = base_point + half_offset_distance * right_direction_2;
+  
+  // 根据笔的位置调整参考点位置（使用 TF 变换得到的偏移）
+  reference_point_left1 -= pen_offset_in_link00;
+  reference_point_left2 -= pen_offset_in_link00;
+  reference_point_right1 -= pen_offset_in_link00;
+  reference_point_right2 -= pen_offset_in_link00;
+  
+  ROS_DEBUG("[PlanTouchGoalAndAngleServer] Reference points after pen offset adjustment:");
+  ROS_DEBUG("  LEFT1: [%.4f, %.4f, %.4f]", reference_point_left1.x(), reference_point_left1.y(), reference_point_left1.z());
+  ROS_DEBUG("  LEFT2: [%.4f, %.4f, %.4f]", reference_point_left2.x(), reference_point_left2.y(), reference_point_left2.z());
+  ROS_DEBUG("  RIGHT1: [%.4f, %.4f, %.4f]", reference_point_right1.x(), reference_point_right1.y(), reference_point_right1.z());
+  ROS_DEBUG("  RIGHT2: [%.4f, %.4f, %.4f]", reference_point_right2.x(), reference_point_right2.y(), reference_point_right2.z());
+
+  // 创建以参考点为起点的直线
+  Line3D line_mid_sampled;
+  line_mid_sampled.point = reference_point_mid;
+  line_mid_sampled.direction = mid_direction;
+
+  Line3D line_left1_sampled;
+  line_left1_sampled.point = reference_point_left1;
+  line_left1_sampled.direction = left_direction_1;
+
+  Line3D line_left2_sampled;
+  line_left2_sampled.point = reference_point_left2;
+  line_left2_sampled.direction = left_direction_2;
+
+  Line3D line_right1_sampled;
+  line_right1_sampled.point = reference_point_right1;
+  line_right1_sampled.direction = right_direction_1;
+
+  Line3D line_right2_sampled;
+  line_right2_sampled.point = reference_point_right2;
+  line_right2_sampled.direction = right_direction_2;
+
+  //==========================================================================
+  // 步骤4：采样并检测可达性
+  //==========================================================================
+  double pitch_mid = 0.0, roll_mid = 0.0;
+  double pitch_left1 = 0.0, roll_left1 = 0.0;
+  double pitch_left2 = 0.0, roll_left2 = 0.0;
+  double pitch_right1 = 0.0, roll_right1 = 0.0;
+  double pitch_right2 = 0.0, roll_right2 = 0.0;
+
+  std::vector<geometry_msgs::PoseStamped> reachable_poses_mid = 
+      sampleAndCheckReachability(line_mid_sampled, mid_sample_start, mid_sample_end, mid_num_samples, pitch_mid, roll_mid);
+
+  std::vector<geometry_msgs::PoseStamped> reachable_poses_left1 = 
+      sampleAndCheckReachability(line_left1_sampled, sample_start, sample_end, num_samples, pitch_left1, roll_left1);
+
+  std::vector<geometry_msgs::PoseStamped> reachable_poses_left2 = 
+      sampleAndCheckReachability(line_left2_sampled, sample_start, sample_end, num_samples, pitch_left2, roll_left2);
+
+  std::vector<geometry_msgs::PoseStamped> reachable_poses_right1 = 
+      sampleAndCheckReachability(line_right1_sampled, sample_start, sample_end, num_samples, pitch_right1, roll_right1);
+
+  std::vector<geometry_msgs::PoseStamped> reachable_poses_right2 = 
+      sampleAndCheckReachability(line_right2_sampled, sample_start, sample_end, num_samples, pitch_right2, roll_right2);
+
+  ROS_INFO("[CROSS_MODE_GET_GOAL_AND_ANGLE] Reachable poses: MID=%zu, LEFT1=%zu, LEFT2=%zu, RIGHT1=%zu, RIGHT2=%zu",
+          reachable_poses_mid.size(), reachable_poses_left1.size(), reachable_poses_left2.size(),
+          reachable_poses_right1.size(), reachable_poses_right2.size());
+
+  // 排序
+  double target_distance_for_touch=0.06;
+  nh_.param("test/target_distance_for_touch", target_distance_for_touch, 0.2);
+
+  reachable_poses_mid = sortPosesByDistanceToPoint(reachable_poses_mid, reference_point_mid, mid_direction, target_distance_for_touch);
+  reachable_poses_left1 = sortPosesByDistanceToPoint(reachable_poses_left1, reference_point_left1, left_direction_1, target_distance_for_touch);
+  reachable_poses_left2 = sortPosesByDistanceToPoint(reachable_poses_left2, reference_point_left2, left_direction_2, target_distance_for_touch);
+  reachable_poses_right1 = sortPosesByDistanceToPoint(reachable_poses_right1, reference_point_right1, right_direction_1, target_distance_for_touch);
+  reachable_poses_right2 = sortPosesByDistanceToPoint(reachable_poses_right2, reference_point_right2, right_direction_2, target_distance_for_touch);
+
+  //==========================================================================
+  // 构造响应：按顺序 [MID, LEFT1, RIGHT1, RIGHT2, LEFT2]
+  //==========================================================================
+  if (!reachable_poses_mid.empty()) {
+    res.target_poses.push_back(reachable_poses_mid[0].pose);
+    res.pitch_angles.push_back(pitch_mid);
+    res.roll_angles.push_back(roll_mid);
+    res.pose_names.push_back("MID");
+  }
+
+  if (!reachable_poses_left1.empty()) {
+    res.target_poses.push_back(reachable_poses_left1[0].pose);
+    res.pitch_angles.push_back(pitch_left1);
+    res.roll_angles.push_back(roll_left1);
+    res.pose_names.push_back("LEFT1");
+  }
+
+
+  if (!reachable_poses_right1.empty()) {
+    res.target_poses.push_back(reachable_poses_right1[0].pose);
+    res.pitch_angles.push_back(pitch_right1);
+    res.roll_angles.push_back(roll_right1);
+    res.pose_names.push_back("RIGHT1");
+  }
+
+  if (!reachable_poses_right2.empty()) {
+    res.target_poses.push_back(reachable_poses_right2[0].pose);
+    res.pitch_angles.push_back(pitch_right2);
+    res.roll_angles.push_back(roll_right2);
+    res.pose_names.push_back("RIGHT2");
+  }
+
+  if (!reachable_poses_left2.empty()) {
+    res.target_poses.push_back(reachable_poses_left2[0].pose);
+    res.pitch_angles.push_back(pitch_left2);
+    res.roll_angles.push_back(roll_left2);
+    res.pose_names.push_back("LEFT2");
+  }
+
+  ROS_INFO("[PlanTouchGoalAndAngleServer] Returning %zu target poses", res.target_poses.size());
+
+    res.call_success = (res.target_poses.size() > 0);
+  return true;
+}
+
 
 geometry_msgs::PoseArray createLineVisualization(const Line3D& line, double t_start, double t_end, int num_points) {
   geometry_msgs::PoseArray line_msg;

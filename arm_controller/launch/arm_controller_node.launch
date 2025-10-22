@@ -42,7 +42,7 @@
         <param name="test/angle_step_deg" value="45.0" />
         <param name="test/target_distance" value="0.10" />
         <!-- Default target pose parameters -->
-        <param name="test/default_target_pose_x" value="0.6" />
+        <param name="test/default_target_pose_x" value="0.56" />
         <param name="test/default_target_pose_y" value="0.0" />
         <param name="test/default_target_pose_z" value="0.1" />
         <param name="test/default_target_pose_orientation_x" value="0.0" />
@@ -50,17 +50,22 @@
         <param name="test/default_target_pose_orientation_z" value="0.0" />
         <param name="test/default_target_pose_orientation_w" value="1.0" />
         
+
+        <param name="test/target_distance_for_touch" value="0.07" />
     </node>
 
     <!-- Static transform from arm to ZED camera -->
-    <node pkg="tf2_ros" type="static_transform_publisher" name="arm2zed" args="-0.39865 0. -0.02174 0 -2.093 0 link02 zed_base"/>
+    <group ns="arm_controller">
     
-    <!-- Robot state publisher for TF and RViz -->
-    <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher">
-        <remap from="/joint_states" to="/arm_controller/joint_states"/>
-        <param name="publish_frequency" type="double" value="1000.0"/>
-    </node>
-    
+        <node pkg="tf2_ros" type="static_transform_publisher" name="arm2zed"
+              args="-0.39865 0. -0.02174 0 -2.093 0 link02 zed_base"/>
+        
+        <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher">
+            <remap from="/joint_states" to="joint_states"/>
+        </node>
+        
+    </group>
+
     <!-- RViz visualization -->
     <!-- <node pkg="rviz" type="rviz" name="rviz" respawn="false" output="screen"
         args="-d $(find z1_description)/launch/setting.rviz"/> -->

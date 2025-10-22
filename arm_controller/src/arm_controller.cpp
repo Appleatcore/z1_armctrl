@@ -5,6 +5,9 @@
 
 namespace arm_controller {
 
+// 前向声明
+geometry_msgs::PoseArray createLineVisualization(const Line3D& line, double t_start, double t_end, int num_points);
+
 ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh), tf_listener_(tf_buffer_) {
   arm_api_ = std::make_unique<ArmApi>();
   arm_model_ = std::make_unique<Z1ArmModel>();
@@ -291,6 +294,21 @@ void ArmController::initSubsAndPubs() {
       nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/line_half2", 1);
   reference_points_pub_ = 
       nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/reference_points", 1);
+  
+  // 初始化交叉模式的直线可视化发布器
+  cross_line_mid_pub_ = 
+      nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/cross_line_mid", 1);
+  cross_line_left1_pub_ = 
+      nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/cross_line_left1", 1);
+  cross_line_left2_pub_ = 
+      nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/cross_line_left2", 1);
+  cross_line_right1_pub_ = 
+      nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/cross_line_right1", 1);
+  cross_line_right2_pub_ = 
+      nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/cross_line_right2", 1);
+  cross_reference_points_pub_ = 
+      nh_.advertise<geometry_msgs::PoseArray>("/arm_controller/cross_reference_points", 1);
+  
   imu_sub_ =
       nh_.subscribe("/aliengo/imu", 1, &ArmController::imuCallback, this);
 }
@@ -406,7 +424,7 @@ void ArmController::controlStep() {
       arm_control_joint_vel_.setZero();
       // ee_pose_goal_ = arm_model_->forwardKinematics(low_state_.getQ());
       // arm_joint_goal_ = low_state_.getQ();
-      setControlCmd(0, 400.0, true);
+      setControlCmd(3, 400.0, true);
       break;
     }
     case ArmControlFsm::Back2Home: {
@@ -802,7 +820,29 @@ bool ArmController::back2HomeServer(
     //           << "\nPlanTicks: " << plan_max_tick_ << std::endl;
     lazyPlan(start_joint_pos, KJointHome_, plan_max_tick_);
     setArmControlFsm(ArmControlFsm::Back2Home);
-    res.call_success = true;
+    // res.call_success = true;
+  }
+  // 等待机械臂执行到位
+  ros::Rate rate(1.0 / control_period_);
+  double timeout = (plan_max_tick_ * control_period_) + 5.0;  // 预计时间 + 5秒超时
+  ros::Time start_time = ros::Time::now();
+  while (ros::ok()) {
+    // 检查是否超时
+    if ((ros::Time::now() - start_time).toSec() > timeout) {
+      ROS_WARN("[Back2Home] Timeout waiting for arm to reach target position");
+      res.call_success = false;
+      return false;
+    }
+    
+    // 检查是否到位
+    if (arm_control_fsm_ == ArmControlFsm::Home ) {
+      ROS_INFO("[Back2Home] Arm reached target position and stabilized");
+      res.call_success = true;
+      return true;
+    }
+    
+    ros::spinOnce();
+    rate.sleep();
   }
   return true;
 }
@@ -1458,6 +1498,73 @@ if (!reachable_poses_left2.empty()) {
 
 ROS_INFO("[CROSS_MODE_GET_GOAL_AND_ANGLE] Returning %zu target poses", res.target_poses.size());
 
+  //==========================================================================
+  // 步骤5：发布可视化数据到RViz
+  //==========================================================================
+  int viz_points = 100;  // 可视化点数
+  
+  // 发布 MID 直线
+  cross_line_mid_pub_.publish(createLineVisualization(line_mid_sampled, mid_sample_start, mid_sample_end, viz_points));
+  ROS_INFO("[CROSS_MODE_VIZ] Published MID line");
+  
+  // 发布 LEFT1 直线
+  cross_line_left1_pub_.publish(createLineVisualization(line_left1_sampled, sample_start, sample_end, viz_points));
+  ROS_INFO("[CROSS_MODE_VIZ] Published LEFT1 line");
+  
+  // 发布 LEFT2 直线
+  cross_line_left2_pub_.publish(createLineVisualization(line_left2_sampled, sample_start, sample_end, viz_points));
+  ROS_INFO("[CROSS_MODE_VIZ] Published LEFT2 line");
+  
+  // 发布 RIGHT1 直线
+  cross_line_right1_pub_.publish(createLineVisualization(line_right1_sampled, sample_start, sample_end, viz_points));
+  ROS_INFO("[CROSS_MODE_VIZ] Published RIGHT1 line");
+  
+  // 发布 RIGHT2 直线
+  cross_line_right2_pub_.publish(createLineVisualization(line_right2_sampled, sample_start, sample_end, viz_points));
+  ROS_INFO("[CROSS_MODE_VIZ] Published RIGHT2 line");
+  
+  // 发布参考点
+  geometry_msgs::PoseArray reference_points_msg;
+  reference_points_msg.header.frame_id = "link00";
+  reference_points_msg.header.stamp = ros::Time::now();
+  
+  // 添加五个参考点
+  geometry_msgs::Pose ref_pose;
+  ref_pose.orientation.w = 1.0;
+  
+  // MID 参考点
+  ref_pose.position.x = reference_point_mid.x();
+  ref_pose.position.y = reference_point_mid.y();
+  ref_pose.position.z = reference_point_mid.z();
+  reference_points_msg.poses.push_back(ref_pose);
+  
+  // LEFT1 参考点
+  ref_pose.position.x = reference_point_left1.x();
+  ref_pose.position.y = reference_point_left1.y();
+  ref_pose.position.z = reference_point_left1.z();
+  reference_points_msg.poses.push_back(ref_pose);
+  
+  // LEFT2 参考点
+  ref_pose.position.x = reference_point_left2.x();
+  ref_pose.position.y = reference_point_left2.y();
+  ref_pose.position.z = reference_point_left2.z();
+  reference_points_msg.poses.push_back(ref_pose);
+  
+  // RIGHT1 参考点
+  ref_pose.position.x = reference_point_right1.x();
+  ref_pose.position.y = reference_point_right1.y();
+  ref_pose.position.z = reference_point_right1.z();
+  reference_points_msg.poses.push_back(ref_pose);
+  
+  // RIGHT2 参考点
+  ref_pose.position.x = reference_point_right2.x();
+  ref_pose.position.y = reference_point_right2.y();
+  ref_pose.position.z = reference_point_right2.z();
+  reference_points_msg.poses.push_back(ref_pose);
+  
+  cross_reference_points_pub_.publish(reference_points_msg);
+  ROS_INFO("[CROSS_MODE_VIZ] Published %zu reference points", reference_points_msg.poses.size());
+  
   res.call_success = (res.target_poses.size() > 0);
 return true;
 }

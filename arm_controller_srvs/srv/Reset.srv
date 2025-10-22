@@ -1,0 +1,4 @@
+int32 cmd
+---
+bool success
+string message

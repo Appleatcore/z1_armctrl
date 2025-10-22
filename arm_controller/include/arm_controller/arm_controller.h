@@ -376,6 +376,14 @@ class ArmController {
   ros::Publisher line_half1_pub_;    // 发布 HALF1 直线
   ros::Publisher line_half2_pub_;    // 发布 HALF2 直线
   ros::Publisher reference_points_pub_; // 发布五个参考点
+  
+  // 交叉模式的可视化发布器
+  ros::Publisher cross_line_mid_pub_;    // 发布交叉模式 MID 直线
+  ros::Publisher cross_line_left1_pub_;  // 发布交叉模式 LEFT1 直线
+  ros::Publisher cross_line_left2_pub_;  // 发布交叉模式 LEFT2 直线
+  ros::Publisher cross_line_right1_pub_; // 发布交叉模式 RIGHT1 直线
+  ros::Publisher cross_line_right2_pub_; // 发布交叉模式 RIGHT2 直线
+  ros::Publisher cross_reference_points_pub_; // 发布交叉模式参考点
   tf::TransformBroadcaster tf_broadcaster_; // TF 广播器，用于发布坐标变换
   tf2_ros::Buffer tf_buffer_;                // TF2 缓冲区，用于查询坐标变换
   tf2_ros::TransformListener tf_listener_;  // TF2 监听器

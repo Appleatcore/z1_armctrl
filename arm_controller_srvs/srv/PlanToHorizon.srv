@@ -1,0 +1,6 @@
+# 移动到水平的默认位置
+# 默认位置从参数服务器读取: /test/line_point_x, /test/line_point_y, /test/line_point_z
+# 如果参数不存在,使用硬编码默认值: x=0.8, y=0.0, z=0.15
+bool plan_to_horizon
+---
+bool call_success

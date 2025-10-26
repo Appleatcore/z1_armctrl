@@ -29,18 +29,18 @@
         <param name="test/line_point_roll" value="1.5708" />
         <param name="test/rotation_angle_deg" value="45.0" />
         <param name="test/sample_start" value="-1.0" />
-        <param name="test/sample_end" value="0.0" />
+        <param name="test/sample_end" value="-0.05" />
         <param name="test/num_samples" value="30" />
         <!-- MID 线单独的采样参数 -->
 
         <param name="test/mid_sample_start" value="-1.0" />
-        <param name="test/mid_sample_end" value="-0.1" />
-        <param name="test/mid_num_samples" value="100" />
-        <param name="test/mid_target_distance" value="0.20" />
+        <param name="test/mid_sample_end" value="-0.05" />
+        <param name="test/mid_num_samples" value="30" />
+        <param name="test/mid_target_distance" value="0.10" />
         <!-- 单独的采样参数 -->
         <param name="test/num_rotations" value="1" />
         <param name="test/angle_step_deg" value="45.0" />
-        <param name="test/target_distance" value="0.10" />
+        <param name="test/target_distance" value="0.1" />
         <!-- Default target pose parameters -->
         <param name="test/default_target_pose_x" value="0.56" />
         <param name="test/default_target_pose_y" value="0.0" />
@@ -49,13 +49,14 @@
         <param name="test/default_target_pose_orientation_y" value="0.0" />
         <param name="test/default_target_pose_orientation_z" value="0.0" />
         <param name="test/default_target_pose_orientation_w" value="1.0" />
+        <param name="test/default_joint_pos_3" value="-0.6" />
         
 
         <param name="test/target_distance_for_touch" value="0.07" />
     </node>
 
     <!-- Static transform from arm to ZED camera -->
-    <group ns="arm_controller">
+    <!-- <group ns="arm_controller">
     
         <node pkg="tf2_ros" type="static_transform_publisher" name="arm2zed"
               args="-0.39865 0. -0.02174 0 -2.093 0 link02 zed_base"/>
@@ -64,7 +65,7 @@
             <remap from="/joint_states" to="joint_states"/>
         </node>
         
-    </group>
+    </group> -->
 
     <!-- RViz visualization -->
     <!-- <node pkg="rviz" type="rviz" name="rviz" respawn="false" output="screen"

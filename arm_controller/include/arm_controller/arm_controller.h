@@ -34,6 +34,7 @@
 #include "arm_controller_srvs/getgoalandangle.h"
 #include "arm_controller_srvs/zedlinktolink00.h"
 #include "arm_controller_srvs/CameraToLink00.h"
+#include "arm_controller_srvs/PlanToHorizon.h"
 #include "js_api.h"
 #include "js_dev.h"
 // #include "arm_planner.h"
@@ -50,6 +51,52 @@ struct Line3D {
   // 在直线上采样点
   std::vector<Eigen::Vector3d> samplePoints(double t_start, double t_end, 
                                              int num_samples) const;
+};
+
+// 3D直线的参数化表示
+struct SampleLine3D {
+    std::string name; 
+    Line3D line;
+    double pitch = 0.0;   // 
+    double roll = 0.0;    // 
+    // 采样参数
+    double sample_start;
+    double sample_end;
+    int num_samples;
+    double target_distance;
+    // 结果
+    std::vector<geometry_msgs::PoseStamped> reachable_poses;
+    SampleLine3D() = default;
+
+    /**
+     * @brief 用于初始化的构造函数
+     * @param name_in "MID", "LEFT1", etc.
+     * @param point_in 直线的起点 
+     * @param direction_in 直线的方向 
+     * @param start 采样的 t_start
+     * @param end 采样的 t_end
+     * @param num 采样点数量
+     * @param dist 目标距离
+     */
+    SampleLine3D(
+        const std::string& name_in,
+        const Eigen::Vector3d& point_in,
+        const Eigen::Vector3d& direction_in,
+        double start,
+        double end,
+        int num,
+        double dist)
+    : name(name_in),
+      sample_start(start),
+      sample_end(end),
+      num_samples(num),
+      target_distance(dist)
+    {
+        // 构造函数体，用于初始化嵌套的 line 成员
+        line.point = point_in;
+        // 确保方向向量总是单位向量
+        line.direction = direction_in.normalized();
+    }
 };
 
 enum class ArmControlFsm {
@@ -125,6 +172,8 @@ class ArmController {
                        arm_controller_srvs::BackToHome::Response& res);
   bool planToDefaultServer(arm_controller_srvs::PlanToDefault::Request& req,
                            arm_controller_srvs::PlanToDefault::Response& res);
+  bool planToHorizonServer(arm_controller_srvs::PlanToHorizon::Request& req,
+                           arm_controller_srvs::PlanToHorizon::Response& res);
   bool jsControlServer(arm_controller_srvs::JoyStickControlRequest& req,
                        arm_controller_srvs::JoyStickControlResponse& res);
   bool gripperControlServer(arm_controller_srvs::GripperControl::Request& req,
@@ -303,6 +352,9 @@ class ArmController {
                                    ros::Publisher* line_publisher = nullptr,
                                    int viz_points = 50);
   // action
+  geometry_msgs::PoseStamped Line3DToPoseStamped(Line3D& line3d_posestamped);
+  geometry_msgs::Pose Line3DToPose(Line3D& line3d_pose);
+  geometry_msgs::PoseArray createLineVisualization(Line3D& line, double t_start, double t_end, int num_points);
   // void planActionServer(const arm_controller::PlanGoalConstPtr& goal);
 
  protected:
@@ -327,6 +379,8 @@ class ArmController {
   // default_kd_{500, 500, 500, 500, 500, 500};
   std::vector<double> default_kp_{20, 30, 30, 20, 15, 10},
       default_kd_{2000, 2000, 2000, 2000, 2000, 2000};
+  Eigen::Matrix<double, 6, 1> arm_control_default_joint_pos_;
+  Eigen::Matrix<double, 6, 1> arm_control_horizon_joint_pos_;
   // moveit planner
   // std::unique_ptr<ArmPlanner> planner_;
   // planning
@@ -384,6 +438,7 @@ class ArmController {
   ros::Publisher cross_line_right1_pub_; // 发布交叉模式 RIGHT1 直线
   ros::Publisher cross_line_right2_pub_; // 发布交叉模式 RIGHT2 直线
   ros::Publisher cross_reference_points_pub_; // 发布交叉模式参考点
+  ros::Publisher cross_center_pub_; // 发布交叉模式中心点
   tf::TransformBroadcaster tf_broadcaster_; // TF 广播器，用于发布坐标变换
   tf2_ros::Buffer tf_buffer_;                // TF2 缓冲区，用于查询坐标变换
   tf2_ros::TransformListener tf_listener_;  // TF2 监听器
@@ -392,7 +447,7 @@ class ArmController {
   // server
   ros::ServiceServer back2home_server_, check_pose_in_workspace_server_,
       plan_server_, search_plan_server_, rotation_search_plan_server_,
-      plan_to_default_server_, js_control_server_, gripper_control_server_,
+      plan_to_default_server_,plan_to_horizon_server_,js_control_server_, gripper_control_server_,
       plan_to_five_point_server_, plan_and_gripper_control_server_,
       get_goal_and_angle_server_, cross_get_goal_and_angle_server_,zed_link_to_link00_server_,camera_to_link00_server_;
   // action server

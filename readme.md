@@ -1,16 +1,48 @@
-## 完成的工作
+# Z1 Arm (unitree_ros): 项目 README
 
-1. **模块化设计**: 在src/unitree_ros-master/robots/z1_description/xacro创建了一个独立的 `camera.xacro` 文件，用于定义相机的所有属性，以便于维护和复用。
-2. **相机集成**: 在主机器人模型 `robot.xacro` 中成功引用了相机模块，并将其固定在夹爪的 `gripperMover` 连杆上。
-3. **传感器配置**: 在 Gazebo 中为相机配置了传感器插件 (`libgazebo_ros_camera.so`)，使其能够以 30Hz 的频率发布 800x800 分辨率的彩色图像。
-4. **模型姿态调整**: 修正了 D435 模型在仿真中默认的垂直姿态，通过在 URDF 中应用 RPY 旋转，使其恢复为正常的水平放置姿态。
-5. **导入操作管道模型**: link机械臂基座，高度0.025米
-6. **加入夹爪控制**:机械臂通常高度0.1米时对齐高度0.025米的管道中心
+## 1. 项目里程碑 (Milestones)
 
-## 后续步骤
+* **[10.26]** 完善 `cross_task` 逻辑并增加 `horizon` (水平线) 辅助功能。(6965d18)
+* **[10.22]** 修复 `arm_sdk` 依赖问题。 (e2ac125)
+* **[10.21]** "race" (竞赛) 任务开发。 (889e784)
+* **[10.17]** **实机测试 (On-robot test) 成功**。 (849baaa)
+* **[10.15]** 增加检测 (Detection) 功能。 (87211d3)
 
-- 逆运动解算末端坐标和角度
+## 2. 主要功能 (Features & Modifications)
 
-## 注意事项
+### 2.1. 仿真与模型 (Simulation & URDF)
 
-- 如果需要深度信息，可将 `libgazebo_ros_camera.so` 插件更换为 `libgazebo_ros_openni_kinect.so`，以同时获取彩色图、深度图和点云数据
+* **模块化 (Modular):** `camera.xacro` (in `z1_description/xacro/`).
+* **集成 (Integration):** 相机 fixed to `gripperMover` link.
+* **姿态修正 (Pose):** Corrected default vertical pose (RPY offset).
+* **Gazebo 插件:** `libgazebo_ros_camera.so` (800x800, 30Hz, color image).
+* **仿真环境 (World):** Added "pipe" model for grasping.
+
+### 2.2. 核心逻辑 (Core Logic)
+
+* **目标检测 (Detection):** Implemented detection function. (87211d3)
+* **坐标转化 (TF):** Logic for coordinate transformation and sending goals. (1240efb)
+* **重力补偿 (Gravity):** Fixed gravity compensation. (e96e813)
+* **夹爪控制 (Gripper):** Added gripper control interface. (2afaaa8)
+
+### 2.3. ROS API (服务与接口)
+
+* **`getgoalandangle.srv`:** "5个点" 的服务流程，用于获取目标和角度。(0a14608)
+* **`cameratolink00` srv:** 获取相机到 `link00` 的转换。 (9f826ec)
+* **姿态接口 (Pose API):** 增加了模型 Pitch/Roll/Yaw 的接口。 (a9226a5)
+
+## 3. 关键配置 (Key Config)
+
+* **机械臂基座高度 (Base Height):** **0.025m**.
+* **抓取参考点 (Grasping Reference):** Arm @ **0.1m** aligns with Pipe @ **0.025m**.
+
+## 4. 后续步骤 (Next Steps)
+
+* **IK (Inverse Kinematics):** Need to configure solver.
+* **任务优化 (Task):** 持续优化 `cross_task` 逻辑。
+* **可视化 (Debug):** 完善 `debug_line` 和 `horizon` 可视化调试功能。
+
+## 5. 开发者提示 (Developer Notes)
+
+* **如需深度 (Need Depth):** Use `libgazebo_ros_openni_kinect.so` plugin.
+    * (Provides: color, depth, point cloud).

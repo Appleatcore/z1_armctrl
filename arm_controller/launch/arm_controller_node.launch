@@ -33,14 +33,14 @@
         <param name="test/num_samples" value="30" />
         <!-- MID 线单独的采样参数 -->
 
-        <param name="test/mid_sample_start" value="-1.0" />
+        <param name="test/mid_sample_start" value="-0.6" />
         <param name="test/mid_sample_end" value="-0.05" />
-        <param name="test/mid_num_samples" value="30" />
-        <param name="test/mid_target_distance" value="0.10" />
-        <!-- 单独的采样参数 -->
+        <param name="test/mid_num_samples" value="300" />
+        <param name="test/mid_target_distance" value="0.15" />
+        <!-- 采样参数 -->
         <param name="test/num_rotations" value="1" />
         <param name="test/angle_step_deg" value="45.0" />
-        <param name="test/target_distance" value="0.1" />
+        <param name="test/target_distance" value="0.15" />
         <!-- Default target pose parameters -->
         <param name="test/default_target_pose_x" value="0.56" />
         <param name="test/default_target_pose_y" value="0.0" />

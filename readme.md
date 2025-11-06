@@ -3,10 +3,18 @@
 ## 1. 项目里程碑 (Milestones)
 
 * **[10.26]** 完善 `cross_task` 逻辑并增加 `horizon` (水平线) 辅助功能。(6965d18)
-* **[10.22]** 修复 `arm_sdk` 依赖问题。 (e2ac125)
-* **[10.21]** "race" (竞赛) 任务开发。 (889e784)
-* **[10.17]** **实机测试 (On-robot test) 成功**。 (849baaa)
-* **[10.15]** 增加检测 (Detection) 功能。 (87211d3)
+
+* **[10.22]** 修复 `arm_sdk` 依赖问题。
+
+* **[10.21]** "race" (竞赛) 任务开发。 
+
+* **[10.17]** 实机测试 (On-robot test) 成功。
+
+* **[10.15]** 增加检测 (Detection) 功能。
+
+* **[11.5]** 1. 完善花（十字）元素的识别（代码规范）。2. vscode上配置clangd
+
+  ![image-20251106204354948](/home/applepie/.config/Typora/typora-user-images/image-20251106204354948.png)
 
 ## 2. 主要功能 (Features & Modifications)
 
@@ -46,3 +54,15 @@
 
 * **如需深度 (Need Depth):** Use `libgazebo_ros_openni_kinect.so` plugin.
     * (Provides: color, depth, point cloud).
+
+### TODO LIST
+
+1. 角度计算不对or达到最大角度限制
+
+![image-20251106204608097](/home/applepie/.config/Typora/typora-user-images/image-20251106204608097.png)
+
+后续把目标点的posestamped带方向直接给机械臂执行，不要分成两个动作
+
+2. 写一个测试花形的脚本，调用多个服务
+
+3. 完善梯型的代码规范

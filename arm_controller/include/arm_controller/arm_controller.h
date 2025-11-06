@@ -11,10 +11,17 @@
 #include <sensor_msgs/Joy.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/Float64.h>
-#include <tf/transform_datatypes.h>
-#include <tf/transform_broadcaster.h>
+// #include <tf/transform_datatypes.h>
+// #include <tf/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_broadcaster.h>      // <-- 替换 tf/transform_broadcaster.h
+#include <tf2_ros/static_transform_broadcaster.h> // <-- 新增 (用于 static_br_ptr_)
+#include <tf2/LinearMath/Quaternion.h>           // <-- 替换 tf/transform_datatypes.h
+#include <tf2/LinearMath/Matrix3x3.h>            // <-- 替换 tf/transform_datatypes.h
+#include <tf2/LinearMath/Vector3.h>              // <-- 替换 tf/transform_datatypes.h
+#include <tf2/LinearMath/Transform.h>            // <-- 替换 tf/transform_datatypes.h
+#include <geometry_msgs/TransformStamped.h>    // <-- 新增 (tf2 广播时使用)
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 // #include <shared_mutex>
 #include <algorithm>
@@ -431,19 +438,24 @@ class ArmController {
   ros::Publisher line_half2_pub_;    // 发布 HALF2 直线
   ros::Publisher reference_points_pub_; // 发布五个参考点
   
-  // 交叉模式的可视化发布器
+  // 十字的可视化发布器
   ros::Publisher cross_line_mid_pub_;    // 发布交叉模式 MID 直线
   ros::Publisher cross_line_left1_pub_;  // 发布交叉模式 LEFT1 直线
   ros::Publisher cross_line_left2_pub_;  // 发布交叉模式 LEFT2 直线
-  ros::Publisher cross_line_right1_pub_; // 发布交叉模式 RIGHT1 直线
-  ros::Publisher cross_line_right2_pub_; // 发布交叉模式 RIGHT2 直线
+  ros::Publisher cross_line_top1_pub_; // 发布交叉模式 TOP1 直线
+  ros::Publisher cross_line_top2_pub_; // 发布交叉模式 TOP2 直线
   ros::Publisher cross_reference_points_pub_; // 发布交叉模式参考点
   ros::Publisher cross_center_pub_; // 发布交叉模式中心点
-  tf::TransformBroadcaster tf_broadcaster_; // TF 广播器，用于发布坐标变换
+  ros::Publisher cross_rotation_transform_top_pub; // 发布LEFT旋转轴
+  ros::Publisher cross_rotation_transform_left_pub; // 发布TOP旋转轴
+//   tf::TransformBroadcaster tf_broadcaster_; // TF 广播器，用于发布坐标变换
+  tf2_ros::TransformBroadcaster tf_broadcaster_; // TF 广播器，用于发布坐标变换
   tf2_ros::Buffer tf_buffer_;                // TF2 缓冲区，用于查询坐标变换
   tf2_ros::TransformListener tf_listener_;  // TF2 监听器
   ros::Subscriber imu_sub_;
   ros::Subscriber execute_process_sub_;  // 订阅执行控制信号
+  std::shared_ptr<tf2_ros::TransformBroadcaster> dynamic_br_ptr_;//动态TF广播器（link00 to object_frame）
+  std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_br_ptr_;//90度静态TF广播器
   // server
   ros::ServiceServer back2home_server_, check_pose_in_workspace_server_,
       plan_server_, search_plan_server_, rotation_search_plan_server_,

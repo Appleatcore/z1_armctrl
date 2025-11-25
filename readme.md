@@ -16,6 +16,18 @@
 
   ![image-20251106204354948](/home/applepie/.config/Typora/typora-user-images/image-20251106204354948.png)
 
+* **[11.12]** 1. 完善梯字元素的识别（代码规范）。
+
+  2. sampleAndCheckReachability新增first_try：把目标点的posestamped带方向直接给机械臂执行（）
+
+* **[11.15]** 1. 建立测试梯字的脚本。
+
+* **[11.19]** 1.在second_try上加入yaw的变化2.基本功能实现完成，但是偶尔出现点位太少，计算复杂度大
+
+* **[11.25]** 功能实现完毕，下一步准备加入皮诺曹运动学库。
+
+  * 目前存在bug：传入的模型姿态太正，会误判为第二次计算姿态方法，导致pitch赋值错误。解决办法：把sampleAndCheckReachability函数的返回值设定为自定义数组，每个点都带上pitch和roll一起传入数组
+
 ## 2. 主要功能 (Features & Modifications)
 
 ### 2.1. 仿真与模型 (Simulation & URDF)
@@ -57,12 +69,5 @@
 
 ### TODO LIST
 
-1. 角度计算不对or达到最大角度限制
-
-![image-20251106204608097](/home/applepie/.config/Typora/typora-user-images/image-20251106204608097.png)
-
-后续把目标点的posestamped带方向直接给机械臂执行，不要分成两个动作
-
-2. 写一个测试花形的脚本，调用多个服务
-
-3. 完善梯型的代码规范
+1. 皮诺曹运动学库
+1. 把sampleAndCheckReachability函数的返回值设定为自定义数组，每个点都带上pitch和roll一起传入数组

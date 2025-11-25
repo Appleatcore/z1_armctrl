@@ -26,8 +26,7 @@ class Rate {
   using clock = std::chrono::high_resolution_clock;
   using time_point = clock::time_point;
   using nanoseconds = std::chrono::nanoseconds;
-  explicit Rate(int freq)
-      : event_time_(clock::now()), cycle_(int(1e9) / freq){};
+  explicit Rate(int freq) : event_time_(clock::now()), cycle_(int(1e9) / freq) {};
   void sync() { event_time_ = clock::now(); };
   void sleep() {
     event_time_ += cycle_;
@@ -43,11 +42,11 @@ class ArmApi {
  public:
   ArmApi();
   ~ArmApi();
-  void getState(ArmLowState &state);
-  void setCmd(const ArmLowCmd &cmd);
+  void getState(ArmLowState& state);
+  void setCmd(const ArmLowCmd& cmd);
 
-  void setFsmState(const ArmFsmState &state) { arm_sdk_->setFsm(state); }
-  ArmModel *getArmModel() { return arm_sdk_->_ctrlComp->armModel; }
+  void setFsmState(const ArmFsmState& state) { arm_sdk_->setFsm(state); }
+  ArmModel* getArmModel() { return arm_sdk_->_ctrlComp->armModel; }
   /**
    * @brief This function consume much time. When you call this function, you
    * shouldn't get thread lock.

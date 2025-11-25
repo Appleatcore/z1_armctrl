@@ -7,7 +7,7 @@
     <arg name="UnitreeGripperYN" default="true"/>
     
     <!-- Robot description for RViz visualization -->
-    <param name="robot_description" command="$(find xacro)/xacro --inorder '$(find z1_description)/xacro/robot.xacro' UnitreeGripper:=$(arg UnitreeGripperYN)"/>
+    <param name="robot_description" command="$(find xacro)/xacro --inorder '$(find z1_description)/xacro/robot_combine.xacro' UnitreeGripper:=$(arg UnitreeGripperYN)"/>
 
     <node pkg="arm_controller" type="arm_controller_node" name="arm_controller_node" output="screen">
         <remap from="/joint_states" to="/$(arg topic_group)/joint_states"/>
@@ -28,23 +28,23 @@
         <param name="test/line_point_yaw" value="0.0" />
         <param name="test/line_point_roll" value="1.5708" />
         <param name="test/rotation_angle_deg" value="45.0" />
-        <param name="test/sample_start" value="-1.0" />
-        <param name="test/sample_end" value="-0.05" />
+        <param name="test/sample_start" value="-0.8" />
+        <param name="test/sample_end" value="-0.15" />
         <param name="test/num_samples" value="30" />
         <!-- MID 线单独的采样参数 -->
 
         <param name="test/mid_sample_start" value="-0.6" />
-        <param name="test/mid_sample_end" value="-0.05" />
-        <param name="test/mid_num_samples" value="300" />
-        <param name="test/mid_target_distance" value="0.15" />
+        <param name="test/mid_sample_end" value="-0.15" />
+        <param name="test/mid_num_samples" value="30" />
+        <param name="test/mid_target_distance" value="0.20" />
         <!-- 采样参数 -->
         <param name="test/num_rotations" value="1" />
         <param name="test/angle_step_deg" value="45.0" />
-        <param name="test/target_distance" value="0.15" />
+        <param name="test/target_distance" value="0.25" />
         <!-- Default target pose parameters -->
         <param name="test/default_target_pose_x" value="0.56" />
         <param name="test/default_target_pose_y" value="0.0" />
-        <param name="test/default_target_pose_z" value="0.1" />
+        <param name="test/default_target_pose_z" value="0.12" />
         <param name="test/default_target_pose_orientation_x" value="0.0" />
         <param name="test/default_target_pose_orientation_y" value="0.0" />
         <param name="test/default_target_pose_orientation_z" value="0.0" />

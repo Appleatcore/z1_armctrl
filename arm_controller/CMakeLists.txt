@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(arm_controller)
+# 全局强制定义 Boost 限制，解决 Pinocchio/Boost 冲突
+add_definitions(-DBOOST_MPL_LIMIT_LIST_SIZE=30)
+add_definitions(-DBOOST_MPL_LIMIT_VECTOR_SIZE=30)
 
 # # Compile as C++11, supported in ROS Kinetic and newer
 set(CMAKE_CXX_FLAGS "-std=c++14 -pthread")
@@ -14,6 +17,8 @@ add_subdirectory(thirdparty/z1_sdk)
 find_library(Z1SDK_LIB Z1_SDK_${CMAKE_SYSTEM_PROCESSOR} thirdparty/z1_sdk/lib)
 set(Z1SDK_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/thirdparty/z1_sdk/include)
 
+find_package(pinocchio REQUIRED)
+
 # # Find catkin macros and libraries
 # # if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 # # is used, also find other catkin packages
@@ -26,7 +31,7 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   sensor_msgs
   arm_controller_srvs
-
+  urdf
   # moveit
   moveit_core
   moveit_ros_planning
@@ -136,7 +141,7 @@ catkin_package(
   arm_controller_srvs
   moveit_core
   moveit_ros_planning_interface
-
+  urdf
   DEPENDS EIGEN3
 )
 
@@ -147,8 +152,13 @@ catkin_package(
 # # Specify additional locations of header files
 # # Your package locations should be listed before other locations
 include_directories(
+  include
   ${catkin_INCLUDE_DIRS}
+  ${pinocchio_INCLUDE_DIRS}
 )
+
+# 添加宏定义 (Pinocchio 可能需要)
+add_definitions(${pinocchio_DEFINITIONS})
 
 # # Declare a C++ library
 add_library(${PROJECT_NAME}
@@ -158,9 +168,16 @@ add_library(${PROJECT_NAME}
   src/geometry_utils.cpp
   src/kinematics.cpp
   src/js_api.cpp
+  src/pinocchio_ik.cpp
 )
 target_include_directories(${PROJECT_NAME} PUBLIC include ${Z1SDK_INCLUDE_DIR})
-target_link_libraries(${PROJECT_NAME} PUBLIC ${Z1SDK_LIB} ${catkin_LIBRARIES})
+# target_link_libraries(${PROJECT_NAME} PUBLIC ${Z1SDK_LIB} ${catkin_LIBRARIES})
+target_link_libraries(${PROJECT_NAME} PUBLIC 
+  ${Z1SDK_LIB} 
+  ${catkin_LIBRARIES} # 包含了 urdf
+  pinocchio::pinocchio
+)
+
 add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}_gencpp)
 
 # # Add cmake target dependencies of the library

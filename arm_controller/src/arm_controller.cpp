@@ -1,3 +1,7 @@
+// clang-format off
+#include <pinocchio/fwd.hpp>
+#include "arm_controller/pinocchio_ik.h"
+// clang-format on
 #include "arm_controller/arm_controller.h"
 // #include <Eigen/Geometry.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -110,6 +114,20 @@ ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh), tf_listener_(
   // Subscriber, publisher and servers
   initSubsAndPubs();
   initServers();
+  // 初始化 Pinocchio IK 求解器
+  std::string urdf_path;
+  // 优先从 parameter server 获取
+  if (nh_.getParam("urdf_path", urdf_path)) {
+    try {
+      // 使用 make_unique 创建实例
+      pinocchio_ik_ = std::make_unique<PinocchioIK>(urdf_path, "gripperStator");  // camera_optical_frame
+      ROS_INFO("Pinocchio IK initialized successfully from: %s", urdf_path.c_str());
+    } catch (const std::exception& e) {
+      ROS_ERROR("Pinocchio Init Failed: %s", e.what());
+    }
+  } else {
+    ROS_ERROR("Failed to get param 'urdf_path'. IK will not work!");
+  }
 }
 
 ArmController::~ArmController() {
@@ -2608,39 +2626,220 @@ bool ArmController::planToFivePointServer(arm_controller_srvs::PlanTofivepoint::
   return true;
 }
 
-bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose, const double& joint6_pos, const bool& use_manual_joint6) {
-  ROS_INFO("[PlanToTargetPose] Planning to target position: (%.3f, %.3f, %.3f)", target_pose.position.x, target_pose.position.y, target_pose.position.z);
+// bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose, const double& joint6_pos, const bool& use_manual_joint6) {
+//   ROS_INFO("[PlanToTargetPose] Planning to target position: (%.3f, %.3f, %.3f)", target_pose.position.x, target_pose.position.y, target_pose.position.z);
 
-  // 检查机械臂状态
-  if (arm_control_fsm_ != ArmControlFsm::Home && arm_control_fsm_ != ArmControlFsm::Arrived) {
-    ROS_WARN(
-        "[PlanToTargetPose] Arm is not in Home or Arrived state. Current "
-        "state: %d",
-        static_cast<int>(arm_control_fsm_));
+//   // 检查机械臂状态
+//   if (arm_control_fsm_ != ArmControlFsm::Home && arm_control_fsm_ != ArmControlFsm::Arrived) {
+//     ROS_WARN(
+//         "[PlanToTargetPose] Arm is not in Home or Arrived state. Current "
+//         "state: %d",
+//         static_cast<int>(arm_control_fsm_));
+//     return false;
+//   }
+
+//   // 获取当前状态
+//   Eigen::Matrix4d start_ee_pose = arm_model_->forwardKinematics(low_state_.getQ());
+
+//   Eigen::Matrix<double, 6, 1> start_joint_pos = low_state_.getQ();
+//   Eigen::Matrix4d camera_target_pose, target_pose_eigen;
+//   Eigen::Matrix<double, 6, 1> target_joint_pos;
+//   bool find_ik{false};
+
+//   // 转换目标位姿（从 geometry_msgs 到 Eigen）
+//   arm_controller::geometryMsgsPose2Pose(target_pose, camera_target_pose);
+//   target_pose_eigen = camera_target_pose;
+
+//   // 补偿相机偏移（从相机位置计算末端执行器位置）
+//   // target_pose_eigen.block<3, 1>(0, 3) = camera_target_pose.block<3, 1>(0, 3) - camera_target_pose.block<3, 3>(0, 0) * kCameraPosBias_E_;
+//   target_pose_eigen.block<3, 1>(0, 3) += Z1Arm_PosBias_E_;
+//   // 计算逆运动学
+//   find_ik = arm_model_->inverseKinematics(target_pose_eigen, start_joint_pos, target_joint_pos, true);
+
+//   ROS_INFO("[PlanToTargetPose] IK solution found: %s", find_ik ? "YES" : "NO");
+//   if (find_ik) {
+//     ROS_INFO("[PlanToTargetPose] Joint[2] value: %.3f rad (%.1f deg)", target_joint_pos[2], target_joint_pos[2] * 180.0 / M_PI);
+//   }
+
+//   if (!arm_motor_safe_) {
+//     ROS_ERROR("[PlanToTargetPose] Arm motor is not safe!");
+//     return false;
+//   }
+
+//   if (!find_ik) {
+//     ROS_ERROR("[PlanToTargetPose] No IK solution found for target pose");
+//     return false;
+//   }
+
+//   // 检查运动是否太小（已经在目标位置附近）
+//   if ((target_joint_pos - start_joint_pos).norm() <= 0.001) {
+//     ROS_INFO("[PlanToTargetPose] Already at target position");
+//     return true;
+//   }
+
+//   // 设置目标位姿和关节角
+//   ee_pose_goal_ = target_pose_eigen;
+//   arm_joint_goal_ = target_joint_pos;
+//   if (use_manual_joint6) {
+//     arm_joint_goal_[5] = joint6_pos;
+//   }
+
+//   // 计算轨迹时间（基于距离和速度）
+//   plan_max_tick_ = static_cast<long unsigned int>((ee_pose_goal_ - start_ee_pose).block<3, 1>(0, 3).norm() / average_move_speed_ / control_period_);
+//   plan_max_tick_ = std::max(100uL, plan_max_tick_);
+
+//   // 生成轨迹
+//   lazyPlan(start_joint_pos, arm_joint_goal_, plan_max_tick_);
+
+//   // 切换到运动状态
+//   setArmControlFsm(ArmControlFsm::PlanMove);
+
+//   ROS_INFO(
+//       "[PlanToTargetPose] Motion plan generated. Duration: %lu ticks "
+//       "(%.2f seconds)",
+//       plan_max_tick_, plan_max_tick_ * control_period_);
+
+//   // 等待机械臂执行到位（execute_process_ == 1.0 表示到位）
+//   ros::Rate rate(1.0 / control_period_);
+//   double timeout = (plan_max_tick_ * control_period_) + 5.0;  // 预计时间 + 5秒超时
+//   ros::Time start_time = ros::Time::now();
+
+//   while (ros::ok()) {
+//     // 检查是否超时
+//     if ((ros::Time::now() - start_time).toSec() > timeout) {
+//       ROS_WARN(
+//           "[PlanToTargetPose] Timeout waiting for arm to reach target "
+//           "position");
+//       return false;
+//     }
+
+//     // 检查是否到位
+//     if (arm_control_fsm_ == ArmControlFsm::Arrived) {
+//       ROS_INFO("[PlanToTargetPose] Arm reached target position and stabilized");
+//       return true;
+//     }
+
+//     ros::spinOnce();
+//     rate.sleep();
+//   }
+
+//   return false;
+// }
+bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose, const double& joint6_pos, const bool& use_manual_joint6) {
+  ROS_INFO("================ [Pinocchio DEEP DEBUG START] ================");
+
+  // --------------------------------------------------------------------------
+  // 1. 基础安全检查
+  // --------------------------------------------------------------------------
+  if (!pinocchio_ik_) {
+    ROS_ERROR("[Critical] PinocchioIK object is NOT initialized! Cannot proceed.");
     return false;
   }
 
-  // 获取当前状态
-  Eigen::Matrix4d start_ee_pose = arm_model_->forwardKinematics(low_state_.getQ());
+  if (arm_control_fsm_ != ArmControlFsm::Home && arm_control_fsm_ != ArmControlFsm::Arrived) {
+    ROS_WARN("[State Error] Arm is not in Home or Arrived state. Current: %d", static_cast<int>(arm_control_fsm_));
+    return false;
+  }
 
+  // --------------------------------------------------------------------------
+  // 2. 输入数据清洗 (修复四元数)
+  // --------------------------------------------------------------------------
+  Eigen::Quaterniond q_check(target_pose.orientation.w, target_pose.orientation.x, target_pose.orientation.y, target_pose.orientation.z);
+
+  // 强制归一化检查：防止输入非法的旋转矩阵
+  if (std::abs(q_check.norm() - 1.0) > 1e-3) {
+    ROS_WARN("[Critical Warning] Input quaternion is NOT normalized! Norm: %.4f. Normalizing it now...", q_check.norm());
+    q_check.normalize();
+  }
+
+  // --------------------------------------------------------------------------
+  // 3. 模型一致性自检 (Model Consistency Check) - 最关键的一步
+  // --------------------------------------------------------------------------
   Eigen::Matrix<double, 6, 1> start_joint_pos = low_state_.getQ();
-  Eigen::Matrix4d camera_target_pose, target_pose_eigen;
+
+  // A. 获取宇树原生库认为的当前末端位置
+  Eigen::Matrix4d unitree_fk = arm_model_->forwardKinematics(start_joint_pos);
+
+  // B. 获取 Pinocchio 库认为的当前末端位置
+  Eigen::Matrix4d pinocchio_fk;
+  bool pin_fk_success = pinocchio_ik_->forwardKinematics(start_joint_pos, pinocchio_fk);
+
+  if (!pin_fk_success) {
+    ROS_ERROR("[FATAL] Pinocchio FK computation failed. Check URDF loading.");
+    return false;
+  }
+
+  // C. 计算两者偏差
+  Eigen::Vector3d pos_diff = unitree_fk.block<3, 1>(0, 3) - pinocchio_fk.block<3, 1>(0, 3);
+  double diff_norm = pos_diff.norm();
+
+  ROS_INFO("----- Model Consistency Check (Unitree vs Pinocchio) -----");
+  ROS_INFO("Current Joints: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]", start_joint_pos[0], start_joint_pos[1], start_joint_pos[2], start_joint_pos[3], start_joint_pos[4], start_joint_pos[5]);
+  ROS_INFO("Diff Norm     : %.5f meters", diff_norm);
+
+  if (diff_norm > 0.02) {  // 如果偏差大于 2cm
+    ROS_ERROR("########################################################");
+    ROS_ERROR("[FATAL] MODEL MISMATCH DETECTED!");
+    ROS_ERROR("Unitree Hardware Pos: (%.3f, %.3f, %.3f)", unitree_fk(0, 3), unitree_fk(1, 3), unitree_fk(2, 3));
+    ROS_ERROR("Pinocchio Model Pos : (%.3f, %.3f, %.3f)", pinocchio_fk(0, 3), pinocchio_fk(1, 3), pinocchio_fk(2, 3));
+    ROS_ERROR("Possible Reasons:");
+    ROS_ERROR("1. URDF 'base_link' offset is different from Unitree SDK.");
+    ROS_ERROR("2. URDF 'end_effector' frame is different (e.g. Flange vs Tool Tip).");
+    ROS_ERROR("########################################################");
+    return false;  // 模型不对，IK 算了也白算，直接返回
+  }
+
+  // --------------------------------------------------------------------------
+  // 4. 准备 IK 目标
+  // --------------------------------------------------------------------------
+  Eigen::Matrix4d target_pose_eigen, camera_target_pose;
   Eigen::Matrix<double, 6, 1> target_joint_pos;
   bool find_ik{false};
 
-  // 转换目标位姿（从 geometry_msgs 到 Eigen）
+  // 转换 ROS 消息
   arm_controller::geometryMsgsPose2Pose(target_pose, camera_target_pose);
   target_pose_eigen = camera_target_pose;
 
-  // 补偿相机偏移（从相机位置计算末端执行器位置）
-  // target_pose_eigen.block<3, 1>(0, 3) = camera_target_pose.block<3, 1>(0, 3) - camera_target_pose.block<3, 3>(0, 0) * kCameraPosBias_E_;
-  target_pose_eigen.block<3, 1>(0, 3) += Z1Arm_PosBias_E_;
-  // 计算逆运动学
-  find_ik = arm_model_->inverseKinematics(target_pose_eigen, start_joint_pos, target_joint_pos, true);
+  // 施加偏移量 (Offset)
+  target_pose_eigen.block<3, 1>(0, 3) += Pinocchio_PosBias_E_;  // Z1Arm_PosBias_E_
 
-  ROS_INFO("[PlanToTargetPose] IK solution found: %s", find_ik ? "YES" : "NO");
+  // 使用归一化后的四元数重写旋转部分 (保证正交性)
+  target_pose_eigen.block<3, 3>(0, 0) = q_check.toRotationMatrix();
+
+  // --------------------------------------------------------------------------
+  // 5. 执行 Pinocchio IK 并对比验证
+  // --------------------------------------------------------------------------
+  ROS_INFO("[Pinocchio] Starting IK search...");
+  ros::Time t_start = ros::Time::now();
+
+  // *** 调用 Pinocchio 求解 ***
+  find_ik = pinocchio_ik_->inverseKinematics(target_pose_eigen, start_joint_pos, target_joint_pos);
+
+  double t_cost = (ros::Time::now() - t_start).toSec();
+
   if (find_ik) {
-    ROS_INFO("[PlanToTargetPose] Joint[2] value: %.3f rad (%.1f deg)", target_joint_pos[2], target_joint_pos[2] * 180.0 / M_PI);
+    ROS_INFO("[Pinocchio] IK SUCCESS! Time: %.4fs", t_cost);
+  } else {
+    ROS_WARN("--------------------------------------------------------");
+    ROS_WARN("[Pinocchio] IK FAILED to converge.");
+
+    // 失败后的诊断：尝试用宇树库算一次，看看是不是物理不可达
+    ROS_WARN("Diagnostics: Attempting Unitree IK for comparison...");
+    Eigen::Matrix<double, 6, 1> backup_joints;
+    bool uni_ik = arm_model_->inverseKinematics(target_pose_eigen, start_joint_pos, backup_joints, true);
+
+    if (uni_ik) {
+      ROS_ERROR(">> DIAGNOSIS: ALGORITHM ISSUE.");
+      ROS_ERROR("   Unitree SDK FOUND a solution, but Pinocchio FAILED.");
+      ROS_ERROR("   Target IS reachable. Your Pinocchio solver parameters (Damping/Step) need tuning.");
+    } else {
+      ROS_ERROR(">> DIAGNOSIS: TARGET UNREACHABLE.");
+      ROS_ERROR("   Both solvers failed. The point is likely out of workspace or in collision.");
+    }
+    ROS_WARN("--------------------------------------------------------");
+
+    // 调试阶段：如果 Pinocchio 失败，我们先不执行动作，直接返回 False
+    return false;
   }
 
   if (!arm_motor_safe_) {
@@ -2648,54 +2847,51 @@ bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose, con
     return false;
   }
 
-  if (!find_ik) {
-    ROS_ERROR("[PlanToTargetPose] No IK solution found for target pose");
-    return false;
-  }
+  // --------------------------------------------------------------------------
+  // 6. 轨迹规划与执行 (如果 IK 成功)
+  // --------------------------------------------------------------------------
 
-  // 检查运动是否太小（已经在目标位置附近）
+  // 检查运动幅度是否太小
   if ((target_joint_pos - start_joint_pos).norm() <= 0.001) {
     ROS_INFO("[PlanToTargetPose] Already at target position");
     return true;
   }
 
-  // 设置目标位姿和关节角
+  // 设置目标
   ee_pose_goal_ = target_pose_eigen;
   arm_joint_goal_ = target_joint_pos;
+
+  // 处理手动第六轴
   if (use_manual_joint6) {
     arm_joint_goal_[5] = joint6_pos;
   }
 
-  // 计算轨迹时间（基于距离和速度）
-  plan_max_tick_ = static_cast<long unsigned int>((ee_pose_goal_ - start_ee_pose).block<3, 1>(0, 3).norm() / average_move_speed_ / control_period_);
+  // 计算时间 (使用 Pinocchio 算出来的初始和目标位置计算距离，更准确)
+  double dist = (target_pose_eigen.block<3, 1>(0, 3) - pinocchio_fk.block<3, 1>(0, 3)).norm();
+  plan_max_tick_ = static_cast<long unsigned int>(dist / average_move_speed_ / control_period_);
   plan_max_tick_ = std::max(100uL, plan_max_tick_);
 
   // 生成轨迹
   lazyPlan(start_joint_pos, arm_joint_goal_, plan_max_tick_);
 
-  // 切换到运动状态
+  // 切换 FSM
   setArmControlFsm(ArmControlFsm::PlanMove);
 
-  ROS_INFO(
-      "[PlanToTargetPose] Motion plan generated. Duration: %lu ticks "
-      "(%.2f seconds)",
-      plan_max_tick_, plan_max_tick_ * control_period_);
+  ROS_INFO("[PlanToTargetPose] Motion plan generated. Dist: %.3fm, Time: %.2fs", dist, plan_max_tick_ * control_period_);
 
-  // 等待机械臂执行到位（execute_process_ == 1.0 表示到位）
+  // --------------------------------------------------------------------------
+  // 7. 等待执行完成
+  // --------------------------------------------------------------------------
   ros::Rate rate(1.0 / control_period_);
-  double timeout = (plan_max_tick_ * control_period_) + 5.0;  // 预计时间 + 5秒超时
-  ros::Time start_time = ros::Time::now();
+  double timeout = (plan_max_tick_ * control_period_) + 5.0;
+  ros::Time wait_start_time = ros::Time::now();
 
   while (ros::ok()) {
-    // 检查是否超时
-    if ((ros::Time::now() - start_time).toSec() > timeout) {
-      ROS_WARN(
-          "[PlanToTargetPose] Timeout waiting for arm to reach target "
-          "position");
+    if ((ros::Time::now() - wait_start_time).toSec() > timeout) {
+      ROS_WARN("[PlanToTargetPose] Timeout waiting for arm to reach target");
       return false;
     }
 
-    // 检查是否到位
     if (arm_control_fsm_ == ArmControlFsm::Arrived) {
       ROS_INFO("[PlanToTargetPose] Arm reached target position and stabilized");
       return true;

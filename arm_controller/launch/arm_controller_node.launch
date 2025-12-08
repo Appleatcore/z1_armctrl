@@ -5,7 +5,8 @@
     <arg name="z1robot_config_path" value="(find $(arg rname)_moveit_config)"/>
     <arg name="dollar" value="$"/>
     <arg name="UnitreeGripperYN" default="true"/>
-    
+    <arg name="urdf_file_path" default="$(find z1_description)/urdf/z1.urdf"/>
+
     <!-- Robot description for RViz visualization -->
     <param name="robot_description" command="$(find xacro)/xacro --inorder '$(find z1_description)/xacro/robot_combine.xacro' UnitreeGripper:=$(arg UnitreeGripperYN)"/>
 
@@ -53,6 +54,8 @@
         
 
         <param name="test/target_distance_for_touch" value="0.07" />
+
+        <param name="urdf_path" type="string" value="$(arg urdf_file_path)" />
     </node>
 
     <!-- Static transform from arm to ZED camera -->

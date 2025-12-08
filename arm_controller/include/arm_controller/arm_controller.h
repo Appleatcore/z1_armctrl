@@ -92,7 +92,7 @@ struct SampleLine3D {
     line.direction = direction_in.normalized();
   }
 };
-
+class PinocchioIK;
 enum class ArmControlFsm { Invalid, Home, Back2Home, Arrived, PlanMove, JoyStickControl };
 
 class ArmController {
@@ -309,6 +309,7 @@ class ArmController {
   // planning
   const Eigen::Vector3d kCameraPosBias_E_{0.0, 0.0, 0.0};
   const Eigen::Vector3d Z1Arm_PosBias_E_{0.01, 0.0, 0.004};
+  const Eigen::Vector3d Pinocchio_PosBias_E_{0.0, 0.0, 0.004};
   Eigen::Matrix<double, 6, 1> arm_joint_goal_, KJointHome_;
   Eigen::Matrix4d ee_pose_goal_, kEePoseHome_;
   std::vector<Eigen::Matrix<double, 6, 1>> joint_pos_trajectory_;
@@ -379,6 +380,11 @@ class ArmController {
   // action server
   // std::unique_ptr<actionlib::SimpleActionServer<arm_controller::PlanAction>>
   //     plan_action_server_;
+
+  // #ifdef USE_PINOCCHIO
+  // Pinocchio 运动学求解器（使用智能指针避免默认构造函数问题）
+  std::unique_ptr<PinocchioIK> pinocchio_ik_;
+  // #endif
 };
 
 }  // namespace arm_controller

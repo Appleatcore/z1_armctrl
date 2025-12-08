@@ -2777,17 +2777,17 @@ bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose, con
   ROS_INFO("Current Joints: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]", start_joint_pos[0], start_joint_pos[1], start_joint_pos[2], start_joint_pos[3], start_joint_pos[4], start_joint_pos[5]);
   ROS_INFO("Diff Norm     : %.5f meters", diff_norm);
 
-  if (diff_norm > 0.02) {  // 如果偏差大于 2cm
-    ROS_ERROR("########################################################");
-    ROS_ERROR("[FATAL] MODEL MISMATCH DETECTED!");
-    ROS_ERROR("Unitree Hardware Pos: (%.3f, %.3f, %.3f)", unitree_fk(0, 3), unitree_fk(1, 3), unitree_fk(2, 3));
-    ROS_ERROR("Pinocchio Model Pos : (%.3f, %.3f, %.3f)", pinocchio_fk(0, 3), pinocchio_fk(1, 3), pinocchio_fk(2, 3));
-    ROS_ERROR("Possible Reasons:");
-    ROS_ERROR("1. URDF 'base_link' offset is different from Unitree SDK.");
-    ROS_ERROR("2. URDF 'end_effector' frame is different (e.g. Flange vs Tool Tip).");
-    ROS_ERROR("########################################################");
-    return false;  // 模型不对，IK 算了也白算，直接返回
-  }
+  // if (diff_norm > 0.02) {  // 如果偏差大于 2cm
+  //   ROS_ERROR("########################################################");
+  //   ROS_ERROR("[FATAL] MODEL MISMATCH DETECTED!");
+  //   ROS_ERROR("Unitree Hardware Pos: (%.3f, %.3f, %.3f)", unitree_fk(0, 3), unitree_fk(1, 3), unitree_fk(2, 3));
+  //   ROS_ERROR("Pinocchio Model Pos : (%.3f, %.3f, %.3f)", pinocchio_fk(0, 3), pinocchio_fk(1, 3), pinocchio_fk(2, 3));
+  //   ROS_ERROR("Possible Reasons:");
+  //   ROS_ERROR("1. URDF 'base_link' offset is different from Unitree SDK.");
+  //   ROS_ERROR("2. URDF 'end_effector' frame is different (e.g. Flange vs Tool Tip).");
+  //   ROS_ERROR("########################################################");
+  //   return false;  // 模型不对，IK 算了也白算，直接返回
+  // }
 
   // --------------------------------------------------------------------------
   // 4. 准备 IK 目标

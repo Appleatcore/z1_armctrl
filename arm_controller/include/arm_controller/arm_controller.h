@@ -33,12 +33,10 @@
 #include "arm_controller_srvs/BackToHome.h"
 #include "arm_controller_srvs/CameraToLink00.h"
 #include "arm_controller_srvs/CheckPoseInWorkspace.h"
-#include "arm_controller_srvs/GripperControl.h"
 #include "arm_controller_srvs/JoyStickControl.h"
 #include "arm_controller_srvs/Plan.h"
 #include "arm_controller_srvs/PlanToDefault.h"
 #include "arm_controller_srvs/PlanToHorizon.h"
-#include "arm_controller_srvs/PlanTofivepoint.h"
 #include "arm_controller_srvs/getgoalandangle.h"
 #include "arm_controller_srvs/planandgrippercontrol.h"
 #include "arm_controller_srvs/zedlinktolink00.h"
@@ -150,8 +148,6 @@ class ArmController {
   bool planToDefaultServer(arm_controller_srvs::PlanToDefault::Request& req, arm_controller_srvs::PlanToDefault::Response& res);
   bool planToHorizonServer(arm_controller_srvs::PlanToHorizon::Request& req, arm_controller_srvs::PlanToHorizon::Response& res);
   bool jsControlServer(arm_controller_srvs::JoyStickControlRequest& req, arm_controller_srvs::JoyStickControlResponse& res);
-  bool gripperControlServer(arm_controller_srvs::GripperControl::Request& req, arm_controller_srvs::GripperControl::Response& res);
-  bool planToFivePointServer(arm_controller_srvs::PlanTofivepoint::Request& req, arm_controller_srvs::PlanTofivepoint::Response& res);
   bool planAndGripperControlServer(arm_controller_srvs::planandgrippercontrol::Request& req, arm_controller_srvs::planandgrippercontrol::Response& res);
   bool getGoalAndAngleServer(arm_controller_srvs::getgoalandangle::Request& req, arm_controller_srvs::getgoalandangle::Response& res);
   bool getCrossGoalAndAngleServer(arm_controller_srvs::getgoalandangle::Request& req, arm_controller_srvs::getgoalandangle::Response& res);
@@ -167,14 +163,6 @@ class ArmController {
    * @return true 如果规划成功，false 否则
    */
   bool planToTargetPose(const geometry_msgs::Pose& target_pose, const double& joint6_pos = 0.0, const bool& use_manual_joint6 = false);
-
-  /**
-   * @brief 控制 Joint6 和夹爪位置
-   * @param joint6_pos Joint6 目标位置（弧度，范围: -3.14 到 3.14）
-   * @param gripper_pos 夹爪目标位置（0.0 张开到 -0.85 闭合）
-   * @return true 如果控制成功，false 否则
-   */
-  bool controlJoint6AndGripper(double joint6_pos, double gripper_pos);
 
   /**
    * @brief 移动到默认点（用于安全过渡）
@@ -278,6 +266,7 @@ class ArmController {
   geometry_msgs::PoseStamped Line3DToPoseStamped(Line3D& line3d_posestamped);
   geometry_msgs::Pose Line3DToPose(Line3D& line3d_pose);
   geometry_msgs::PoseArray createLineVisualization(Line3D& line, double t_start, double t_end, int num_points);
+  bool IsPlan(geometry_msgs::Pose& target_pose);
   // void planActionServer(const arm_controller::PlanGoalConstPtr& goal);
 
  protected:
@@ -301,7 +290,7 @@ class ArmController {
   bool arm_motor_safe_{true};
   // std::vector<double> default_kp_{5, 7.5, 7.5, 5, 3.75, 2.5},
   // default_kd_{500, 500, 500, 500, 500, 500};
-  std::vector<double> default_kp_{20, 30, 30, 20, 15, 10}, default_kd_{2000, 2000, 2000, 2000, 2000, 2000};
+  std::vector<double> default_kp_{20, 30, 30, 20, 15, 25}, default_kd_{2000, 2000, 2000, 2000, 2000, 2000};
   Eigen::Matrix<double, 6, 1> arm_control_default_joint_pos_;
   Eigen::Matrix<double, 6, 1> arm_control_horizon_joint_pos_;
   // moveit planner

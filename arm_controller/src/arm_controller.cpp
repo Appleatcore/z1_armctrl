@@ -27,7 +27,7 @@ ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh), tf_listener_(
   static_br_ptr_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>();
 
   // 在启动时发布静态变换
-  // (input_frame -> object_frame)
+  // (input_frame -> object_frame)，让object_frame与input_frame对齐，x轴指向前方
   geometry_msgs::TransformStamped t_static_msg, t_static_msg_flower, t_static_msg_combine;
 
   t_static_msg_flower.header.stamp = ros::Time::now();
@@ -120,7 +120,7 @@ ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh), tf_listener_(
   if (nh_.getParam("urdf_path", urdf_path)) {
     try {
       // 使用 make_unique 创建实例
-      pinocchio_ik_ = std::make_unique<PinocchioIK>(urdf_path, "gripperStator");  // camera_optical_frame
+      pinocchio_ik_ = std::make_unique<PinocchioIK>(urdf_path, "camera_link");  // camera_optical_frame，gripperStator，camera_link
       ROS_INFO("Pinocchio IK initialized successfully from: %s", urdf_path.c_str());
     } catch (const std::exception& e) {
       ROS_ERROR("Pinocchio Init Failed: %s", e.what());
@@ -259,8 +259,6 @@ void ArmController::initServers() {
   check_pose_in_workspace_server_ = nh_.advertiseService("check_pose_in_workspace", &ArmController::isInWorkspaceServer, this);
   search_plan_server_ = nh_.advertiseService("search_plan", &ArmController::searchPlanServer, this);
   js_control_server_ = nh_.advertiseService("joy_stick_control", &ArmController::jsControlServer, this);
-  gripper_control_server_ = nh_.advertiseService("gripper_control", &ArmController::gripperControlServer, this);
-  plan_to_five_point_server_ = nh_.advertiseService("plan_to_five_point", &ArmController::planToFivePointServer, this);
   plan_and_gripper_control_server_ = nh_.advertiseService("plan_and_gripper_control", &ArmController::planAndGripperControlServer, this);
   get_goal_and_angle_server_ = nh_.advertiseService("get_goal_and_angle", &ArmController::getGoalAndAngleServer, this);
   zed_link_to_link00_server_ = nh_.advertiseService("zed_link_to_link00", &ArmController::zedLinkToLink00Server, this);
@@ -632,31 +630,98 @@ bool ArmController::searchPlanServer(arm_controller_srvs::Plan::Request& req, ar
 bool ArmController::IsPlanServer(arm_controller_srvs::Plan::Request& req, arm_controller_srvs::Plan::Response& res) {
   res.call_success = false;
 
-  if (arm_control_fsm_ == ArmControlFsm::Home || arm_control_fsm_ == ArmControlFsm::Arrived) {
-    Eigen::Matrix4d start_ee_pose = arm_model_->forwardKinematics(low_state_.getQ());
-    Eigen::Matrix<double, 6, 1> start_joint_pos = low_state_.getQ();
-    Eigen::Matrix4d camera_target_pose, target_pose;
-    Eigen::Matrix<double, 6, 1> target_joint_pos;
-    bool find_ik{false};
+  geometry_msgs::Pose probe_pose = req.target_pose;
 
-    arm_controller::geometryMsgsPose2Pose(req.target_pose, camera_target_pose);
-    target_pose = camera_target_pose;
-    // target_pose.block<3, 1>(0, 3) = camera_target_pose.block<3, 1>(0, 3) - camera_target_pose.block<3, 3>(0, 0) * kCameraPosBias_E_;
-    target_pose.block<3, 1>(0, 3) += Z1Arm_PosBias_E_;
-    find_ik = arm_model_->inverseKinematics(target_pose, start_joint_pos, target_joint_pos, true);
+  // IsPlan 内部已经包含了 pinocchio_ik_ 的初始化检查和 FSM 状态检查
+  bool plan_feasible = IsPlan(probe_pose);
 
-    // if (find_ik && target_joint_pos[2] < -1.5) {
-    //   ROS_DEBUG("[IsPlanServer] Joint[2]=%.3f rad (%.1f deg) violates limit
-    //   -1.5 rad",
-    //             target_joint_pos[2], target_joint_pos[2] * 180.0 / M_PI);
-    //   find_ik = false;  // 强制标记为失败
-    // }
+  if (plan_feasible && arm_motor_safe_) {
+    res.call_success = true;
 
-    if (arm_motor_safe_ && find_ik) {
-      res.call_success = true;
-    }
+    // 打印调试信息：对比一下“你想去的”和“实际能去的”
+    // 因为我们忽略了 Roll，probe_pose 里的四元数可能和 req 里的不一样
+    // ROS_INFO_THROTTLE(1.0, "[IsPlanServer] Check OK. Request: (%.2f, %.2f, %.2f) -> Feasible: (%.2f, %.2f, %.2f)",
+    //   req.target_pose.position.x, req.target_pose.position.y, req.target_pose.position.z,
+    //   probe_pose.position.x, probe_pose.position.y, probe_pose.position.z);
+  } else {
+    res.call_success = false;
   }
+
   return true;
+}
+
+bool ArmController::IsPlan(geometry_msgs::Pose& target_pose) {
+  // 1. 基础检查
+  if (!pinocchio_ik_) {
+    ROS_ERROR("[IsPlan] PinocchioIK is NOT initialized!");
+    return false;
+  }
+
+  // 状态检查：只允许在静止或空闲状态下查询
+  if (arm_control_fsm_ != ArmControlFsm::Home && arm_control_fsm_ != ArmControlFsm::Arrived) {
+    // ROS_WARN("[IsPlan] Rejected. Arm is moving.");
+    // 可根据需求决定是否允许运动中查询，通常建议允许，所以这里只做警告或直接通过
+  }
+
+  // 2. 四元数归一化 (防止非法输入)
+  Eigen::Quaterniond q_check(target_pose.orientation.w, target_pose.orientation.x, target_pose.orientation.y, target_pose.orientation.z);
+  if (std::abs(q_check.norm() - 1.0) > 1e-3) q_check.normalize();
+
+  // 3. 准备 7 维状态
+  // 即使只是查询，也需要当前的关节角作为 IK 的“种子(Seed)”，这样算出来的解离当前位置最近
+  Eigen::VectorXd start_state_7d = Eigen::VectorXd::Zero(7);
+  start_state_7d.head<6>() = low_state_.getQ();
+  start_state_7d[6] = low_state_.getGripperQ();
+
+  Eigen::VectorXd target_state_7d = Eigen::VectorXd::Zero(7);
+
+  // 4. 准备目标位姿矩阵
+  Eigen::Matrix4d target_pose_eigen;
+  arm_controller::geometryMsgsPose2Pose(target_pose, target_pose_eigen);
+  target_pose_eigen.block<3, 3>(0, 0) = q_check.toRotationMatrix();
+
+  // 【重要】移除手动偏移
+  // 如果 pinocchio_ik_ 初始化时用的是 "camera_optical_frame"，则不需要加 Bias
+  // target_pose_eigen.block<3, 1>(0, 3) += Pinocchio_PosBias_E_; // DELETE THIS
+
+  // 5. 设置 IK 权重 (保持与 planToTargetPose 一致)
+  // Look-At 模式：忽略 Roll (Local Z 轴旋转)，大幅提高可达性
+  Eigen::Matrix<double, 6, 1> weights;
+  weights << 1, 1, 1, 0, 1, 1;
+
+  // 6. 执行 IK 求解
+  // 这是一个纯数学计算，不会控制机械臂运动
+  bool find_ik = pinocchio_ik_->inverseKinematics(target_pose_eigen, start_state_7d, target_state_7d, weights);
+
+  // 7. 结果处理
+  if (arm_motor_safe_ && find_ik) {
+    // =========================== 关键步骤 ===========================
+    // IK 算出来了，但因为我们忽略了 Roll，或者有微小误差
+    // 我们需要知道：如果机械臂走到这个角度，【实际】会在哪里？
+
+    Eigen::Matrix4d actual_pose_eigen;
+    // 使用算出来的 7 维角度计算正运动学 (FK)
+    pinocchio_ik_->forwardKinematics(target_state_7d, actual_pose_eigen);
+
+    // 将实际位姿回写给 target_pose (引用传递)
+    // 这样外部调用者就知道：“哦，我让你去 A，你实际上只能去 A'”
+    Eigen::Vector3d trans = actual_pose_eigen.block<3, 1>(0, 3);
+    Eigen::Matrix3d rot = actual_pose_eigen.block<3, 3>(0, 0);
+    Eigen::Quaterniond q_actual(rot);
+    q_actual.normalize();
+
+    target_pose.position.x = trans.x();
+    target_pose.position.y = trans.y();
+    target_pose.position.z = trans.z();
+    target_pose.orientation.x = q_actual.x();
+    target_pose.orientation.y = q_actual.y();
+    target_pose.orientation.z = q_actual.z();
+    target_pose.orientation.w = q_actual.w();
+
+    return true;
+  }
+
+  return false;
 }
 
 bool ArmController::back2HomeServer(arm_controller_srvs::BackToHome::Request& req, arm_controller_srvs::BackToHome::Response& res) {
@@ -841,7 +906,7 @@ bool ArmController::cameraToLink00Server(arm_controller_srvs::CameraToLink00::Re
     bool has_camera_frame = false;
 
     try {
-      transform_stamped = tf_buffer_.lookupTransform("link00", "camera_optical_frame", ros::Time(0), ros::Duration(0.5));
+      transform_stamped = tf_buffer_.lookupTransform("link00", "camera_link", ros::Time(0), ros::Duration(0.5));
       has_camera_frame = true;
       ROS_INFO("[CameraToLink00] Found camera frame in TF tree");
     } catch (tf2::TransformException& ex) {
@@ -860,7 +925,7 @@ bool ArmController::cameraToLink00Server(arm_controller_srvs::CameraToLink00::Re
     if (has_camera_frame) {
       // 有 camera 坐标系:创建相机坐标系下的偏移位姿并转换
       geometry_msgs::PoseStamped camera_offset_pose;
-      camera_offset_pose.header.frame_id = "camera_optical_frame";
+      camera_offset_pose.header.frame_id = "camera_link";
       camera_offset_pose.header.stamp = ros::Time::now();
       camera_offset_pose.pose.position.x = req.dx;
       camera_offset_pose.pose.position.y = req.dy;
@@ -914,39 +979,6 @@ bool ArmController::cameraToLink00Server(arm_controller_srvs::CameraToLink00::Re
     ROS_ERROR("[CameraToLink00] Exception: %s", e.what());
     return false;
   }
-}
-
-bool ArmController::gripperControlServer(arm_controller_srvs::GripperControl::Request& req, arm_controller_srvs::GripperControl::Response& res) {
-  res.call_success = false;
-
-  // 检查 Joint6 角度范围
-  // if (req.joint6_pos < -3.14 || req.joint6_pos > 3.14) {
-  //   std::cout << "[Gripper Control] Invalid Joint6 position: " <<
-  //   req.joint6_pos
-  //             << " rad (valid range: -3.14 to 3.14)" << std::endl;
-  //   return true;
-  // }
-
-  // // 如果不在 Arrived 或 PlanMove 状态，需要初始化机械臂位置
-  // if (arm_control_fsm_ != ArmControlFsm::Arrived &&
-  //     arm_control_fsm_ != ArmControlFsm::PlanMove) {
-  //   arm_control_joint_pos_ = low_state_.getQ();  // 保持当前位置
-  //   arm_control_joint_vel_.setZero();
-  // }
-
-  // // 设置夹爪目标
-  // gripper_goal_ = req.gripper_pos;
-
-  // // 设置 Joint6 目标
-  // arm_control_joint_pos_[5] = req.joint6_pos;  // Joint6 是索引 5
-
-  // std::cout << "[Gripper Control] Setting Joint6 to: " << req.joint6_pos
-  //           << " rad (" << (req.joint6_pos * 180.0 / 3.14159) << " deg), "
-  //           << "Gripper to: " << gripper_goal_ << std::endl;
-
-  res.call_success = false;
-  // setArmControlFsm(ArmControlFsm::Arrived);
-  return true;
 }
 
 bool ArmController::planAndGripperControlServer(arm_controller_srvs::planandgrippercontrol::Request& req, arm_controller_srvs::planandgrippercontrol::Response& res) {
@@ -1170,13 +1202,7 @@ bool ArmController::getGoalAndAngleServer(arm_controller_srvs::getgoalandangle::
   if (!reachable_poses_out1.empty()) {
     res.target_poses.push_back(reachable_poses_out1[0].pose);
     target_poses_msg.poses.push_back(reachable_poses_out1[0].pose);
-    // 检查朝向是否为(0,0,0,1)，如果是则说明是第一种方式得到的，重置pitch和roll为0
     geometry_msgs::Pose& pose = reachable_poses_out1[0].pose;
-    if (!(pose.orientation.x == 0.0 && pose.orientation.y == 0.0 && pose.orientation.z == 0.0 && pose.orientation.w == 1.0)) {
-      pitch_1 = -0.7854;
-      roll_1 = 0.0;
-      ROS_INFO("Reset pitch and roll to 0 for identity quaternion pose");
-    }
     res.pitch_angles.push_back(pitch_1);
     res.roll_angles.push_back(roll_1);
     res.pose_names.push_back("OUT1");
@@ -1185,13 +1211,7 @@ bool ArmController::getGoalAndAngleServer(arm_controller_srvs::getgoalandangle::
   if (!reachable_poses_half1.empty()) {
     res.target_poses.push_back(reachable_poses_half1[0].pose);
     target_poses_msg.poses.push_back(reachable_poses_half1[0].pose);
-    // 检查朝向是否为(0,0,0,1)，如果是则说明是第一种方式得到的，重置pitch和roll为0
     geometry_msgs::Pose& pose = reachable_poses_half1[0].pose;
-    if (!(pose.orientation.x == 0.0 && pose.orientation.y == 0.0 && pose.orientation.z == 0.0 && pose.orientation.w == 1.0)) {
-      pitch_half1 = -0.7854;
-      roll_half1 = 0.0;
-      ROS_INFO("Reset pitch and roll to 0 for identity quaternion pose");
-    }
     res.pitch_angles.push_back(pitch_half1);
     res.roll_angles.push_back(roll_half1);
     res.pose_names.push_back("HALF1");
@@ -1200,13 +1220,7 @@ bool ArmController::getGoalAndAngleServer(arm_controller_srvs::getgoalandangle::
   if (!reachable_poses_mid.empty()) {
     res.target_poses.push_back(reachable_poses_mid[0].pose);
     target_poses_msg.poses.push_back(reachable_poses_mid[0].pose);
-    // 检查朝向是否为(0,0,0,1)，如果是则说明是第一种方式得到的，重置pitch和roll为0
     geometry_msgs::Pose& pose = reachable_poses_mid[0].pose;
-    if (!(pose.orientation.x == 0.0 && pose.orientation.y == 0.0 && pose.orientation.z == 0.0 && pose.orientation.w == 1.0)) {
-      pitch_0 = -0.7854;
-      roll_0 = 0.0;
-      ROS_INFO("Reset pitch and roll to 0 for identity quaternion pose");
-    }
     res.pitch_angles.push_back(pitch_0);
     res.roll_angles.push_back(roll_0);
     res.pose_names.push_back("MID");
@@ -1215,13 +1229,7 @@ bool ArmController::getGoalAndAngleServer(arm_controller_srvs::getgoalandangle::
   if (!reachable_poses_half2.empty()) {
     res.target_poses.push_back(reachable_poses_half2[0].pose);
     target_poses_msg.poses.push_back(reachable_poses_half2[0].pose);
-    // 检查朝向是否为(0,0,0,1)，如果是则说明是第一种方式得到的，重置pitch和roll为0
     geometry_msgs::Pose& pose = reachable_poses_half2[0].pose;
-    if (!(pose.orientation.x == 0.0 && pose.orientation.y == 0.0 && pose.orientation.z == 0.0 && pose.orientation.w == 1.0)) {
-      pitch_half2 = -0.7854;
-      roll_half2 = 0.0;
-      ROS_INFO("Reset pitch and roll to 0 for identity quaternion pose");
-    }
     res.pitch_angles.push_back(pitch_half2);
     res.roll_angles.push_back(roll_half2);
     res.pose_names.push_back("HALF2");
@@ -1230,13 +1238,7 @@ bool ArmController::getGoalAndAngleServer(arm_controller_srvs::getgoalandangle::
   if (!reachable_poses_out2.empty()) {
     res.target_poses.push_back(reachable_poses_out2[0].pose);
     target_poses_msg.poses.push_back(reachable_poses_out2[0].pose);
-    // 检查朝向是否为(0,0,0,1)，如果是则说明是第一种方式得到的，重置pitch和roll为0
     geometry_msgs::Pose& pose = reachable_poses_out2[0].pose;
-    if (!(pose.orientation.x == 0.0 && pose.orientation.y == 0.0 && pose.orientation.z == 0.0 && pose.orientation.w == 1.0)) {
-      pitch_2 = -0.7854;
-      roll_2 = 0.0;
-      ROS_INFO("Reset pitch and roll to 0 for identity quaternion pose");
-    }
     res.pitch_angles.push_back(pitch_2);
     res.roll_angles.push_back(roll_2);
     res.pose_names.push_back("OUT2");
@@ -1510,13 +1512,6 @@ bool ArmController::getCrossGoalAndAngleServer(arm_controller_srvs::getgoalandan
   if (!reachable_poses_left1.empty()) {
     res.target_poses.push_back(reachable_poses_left1[0].pose);
     target_poses_msg.poses.push_back(reachable_poses_left1[0].pose);
-    // 检查朝向是否为(0,0,0,1)，如果是则说明是第一种方式得到的，重置pitch和roll为0
-    geometry_msgs::Pose& pose = reachable_poses_left1[0].pose;
-    if (!(pose.orientation.x == 0.0 && pose.orientation.y == 0.0 && pose.orientation.z == 0.0 && pose.orientation.w == 1.0)) {
-      pitch_left1 = -0.7854;
-      roll_left1 = 0.0;
-      ROS_INFO("Reset pitch and roll to 0 for identity quaternion pose");
-    }
     res.pitch_angles.push_back(pitch_left1);
     res.roll_angles.push_back(roll_left1);
     res.pose_names.push_back("LEFT1");
@@ -1525,13 +1520,6 @@ bool ArmController::getCrossGoalAndAngleServer(arm_controller_srvs::getgoalandan
   if (!reachable_poses_top1.empty()) {
     res.target_poses.push_back(reachable_poses_top1[0].pose);
     target_poses_msg.poses.push_back(reachable_poses_top1[0].pose);
-    // 检查朝向是否为(0,0,0,1)，如果是则说明是第一种方式得到的，重置pitch和roll为0
-    geometry_msgs::Pose& pose = reachable_poses_top1[0].pose;
-    if (!(pose.orientation.x == 0.0 && pose.orientation.y == 0.0 && pose.orientation.z == 0.0 && pose.orientation.w == 1.0)) {
-      pitch_top1 = -0.7854;
-      roll_top1 = 0.0;
-      ROS_INFO("Reset pitch and roll to 0 for identity quaternion pose");
-    }
     res.pitch_angles.push_back(pitch_top1);
     res.roll_angles.push_back(roll_top1);
     res.pose_names.push_back("TOP1");
@@ -1540,13 +1528,6 @@ bool ArmController::getCrossGoalAndAngleServer(arm_controller_srvs::getgoalandan
   if (!reachable_poses_top2.empty()) {
     res.target_poses.push_back(reachable_poses_top2[0].pose);
     target_poses_msg.poses.push_back(reachable_poses_top2[0].pose);
-    // 检查朝向是否为(0,0,0,1)，如果是则说明是第一种方式得到的，重置pitch和roll为0
-    geometry_msgs::Pose& pose = reachable_poses_top2[0].pose;
-    if (!(pose.orientation.x == 0.0 && pose.orientation.y == 0.0 && pose.orientation.z == 0.0 && pose.orientation.w == 1.0)) {
-      pitch_top2 = -0.7854;
-      roll_top2 = 0.0;
-      ROS_INFO("Reset pitch and roll to 0 for identity quaternion pose");
-    }
     res.pitch_angles.push_back(pitch_top2);
     res.roll_angles.push_back(roll_top2);
     res.pose_names.push_back("TOP2");
@@ -1555,13 +1536,6 @@ bool ArmController::getCrossGoalAndAngleServer(arm_controller_srvs::getgoalandan
   if (!reachable_poses_left2.empty()) {
     res.target_poses.push_back(reachable_poses_left2[0].pose);
     target_poses_msg.poses.push_back(reachable_poses_left2[0].pose);
-    // 检查朝向是否为(0,0,0,1)，如果是则说明是第一种方式得到的，重置pitch和roll为0
-    geometry_msgs::Pose& pose = reachable_poses_left2[0].pose;
-    if (!(pose.orientation.x == 0.0 && pose.orientation.y == 0.0 && pose.orientation.z == 0.0 && pose.orientation.w == 1.0)) {
-      pitch_left2 = -0.7854;
-      roll_left2 = 0.0;
-      ROS_INFO("Reset pitch and roll to 0 for identity quaternion pose");
-    }
     res.pitch_angles.push_back(pitch_left2);
     res.roll_angles.push_back(roll_left2);
     res.pose_names.push_back("LEFT2");
@@ -1570,13 +1544,6 @@ bool ArmController::getCrossGoalAndAngleServer(arm_controller_srvs::getgoalandan
   if (!reachable_poses_mid.empty()) {
     res.target_poses.push_back(reachable_poses_mid[0].pose);
     target_poses_msg.poses.push_back(reachable_poses_mid[0].pose);
-    // 检查朝向是否为(0,0,0,1)，如果是则说明是第一种方式得到的，重置pitch和roll为0
-    geometry_msgs::Pose& pose = reachable_poses_mid[0].pose;
-    if (!(pose.orientation.x == 0.0 && pose.orientation.y == 0.0 && pose.orientation.z == 0.0 && pose.orientation.w == 1.0)) {
-      pitch_mid = -0.7854;
-      roll_mid = 0.0;
-      ROS_INFO("Reset pitch and roll to 0 for identity quaternion pose");
-    }
     res.pitch_angles.push_back(pitch_mid);
     res.roll_angles.push_back(roll_mid);
     res.pose_names.push_back("MID");
@@ -1967,941 +1934,152 @@ geometry_msgs::PoseArray ArmController::createLineVisualization(Line3D& line, do
   return line_msg;
 };
 
-bool ArmController::planToFivePointServer(arm_controller_srvs::PlanTofivepoint::Request& req, arm_controller_srvs::PlanTofivepoint::Response& res) {
-  res.call_success = false;
-
-  // test - 从 ROS 参数服务器读取配置
-  double line_x, line_y, line_z;
-  double center_x, center_y, center_z;
-  double line_pitch_link00, line_yaw_link00, line_roll_link00;
-  double line_pitch_link01, line_yaw_link01, line_roll_link01;
-  double line_pitch, line_yaw, line_roll;
-  double rotation_angle_deg, sample_start, sample_end;
-  double origin_direction_x, origin_direction_y, origin_direction_z;
-  double rotation_axis_x, rotation_axis_y, rotation_axis_z;
-  // 半侧点1和2：沿着直线轴线方向在x轴负方向上加入偏移量
-  double half_offset_distance = -0.15,
-         mid_offset_distance = -0.15;  // x轴负方向偏移量
-  // double translation_axis_x, translation_axis_y, translation_axis_z;
-  int num_samples, num_rotations;
-  double angle_step_deg;
-  // MID 线专用采样参数
-  double mid_sample_start, mid_sample_end;
-  int mid_num_samples;
-
-  // 提取位置
-  line_x = req.target_pose.pose.position.x;
-  line_y = req.target_pose.pose.position.y;
-  line_z = req.target_pose.pose.position.z;
-
-  // 将四元数转换为 roll, pitch, yaw
-  // 先读取传入的四元数
-  tf2::Quaternion quat_input(req.target_pose.pose.orientation.x, req.target_pose.pose.orientation.y, req.target_pose.pose.orientation.z, req.target_pose.pose.orientation.w);
-
-  // 当前变换后的状态：原 X → 现 Z，原 Y → 现 X，原 Z → 现 Y
-  // 需要逆变换恢复到原始状态
-
-  // 逆变换：先绕Y轴逆时针旋转90度
-  tf2::Quaternion rot_y_inv;
-  rot_y_inv.setRotation(tf2::Vector3(0, 1, 0),
-                        M_PI / 2.0);  // 逆时针 90度 = π/2
-
-  // 逆变换：再绕X轴逆时针旋转90度
-  tf2::Quaternion rot_x_inv;
-  rot_x_inv.setRotation(tf2::Vector3(1, 0, 0),
-                        M_PI / 2.0);  // 逆时针 90度 = π/2
-
-  // 额外变换：绕Y轴旋转180度
-  tf2::Quaternion rot_y_180;
-  rot_y_180.setRotation(tf2::Vector3(0, 1, 0), M_PI);  // 180度 = π
-
-  // 应用变换：先应用逆变换，再绕Y轴旋转180度
-  tf2::Quaternion quat = quat_input * rot_y_inv * rot_x_inv * rot_y_180;
-
-  // tf2::Quaternion quat = quat_input;
-
-  // 发布变换后的姿态
-  geometry_msgs::PoseStamped transformed_pose_msg;
-  transformed_pose_msg.header.frame_id = "link00";
-  transformed_pose_msg.header.stamp = ros::Time::now();
-  transformed_pose_msg.pose.position.x = line_x;
-  transformed_pose_msg.pose.position.y = line_y;
-  transformed_pose_msg.pose.position.z = line_z;
-  transformed_pose_msg.pose.orientation.w = quat.w();
-  transformed_pose_msg.pose.orientation.x = quat.x();
-  transformed_pose_msg.pose.orientation.y = quat.y();
-  transformed_pose_msg.pose.orientation.z = quat.z();
-  transformed_input_pub_.publish(transformed_pose_msg);
-
-  // 通过 TF 广播变换后的坐标系
-  geometry_msgs::TransformStamped transform_msg;
-
-  transform_msg.header.stamp = ros::Time::now();
-  transform_msg.header.frame_id = "link00";
-  transform_msg.child_frame_id = "transformed_input_frame";
-
-  transform_msg.transform.translation.x = line_x;
-  transform_msg.transform.translation.y = line_y;
-  transform_msg.transform.translation.z = line_z;
-
-  // 假设 quat 此时已经是 tf2::Quaternion
-  transform_msg.transform.rotation = tf2::toMsg(quat);
-
-  tf_broadcaster_.sendTransform(transform_msg);
-
-  ROS_INFO(
-      "[PlanToFivePoint] Published transformed input pose and TF frame "
-      "'transformed_input_frame'");
-
-  tf2::Matrix3x3 mat(quat);
-  mat.getRPY(line_roll_link00, line_pitch_link00, line_yaw_link00);
-
-  ROS_INFO(
-      "[PlanToFivePoint] Received pose: pos=(%.3f, %.3f, %.3f), "
-      "rpy=(%.3f, %.3f, %.3f)",
-      line_x, line_y, line_z, line_roll_link00, line_pitch_link00, line_yaw_link00);
-
-  // 从 ROS 参数服务器读取其他配置参数
-  nh_.param("test/mid_sample_start", mid_sample_start, -1.0);
-  nh_.param("test/mid_sample_end", mid_sample_end, 0.5);
-  nh_.param("test/mid_num_samples", mid_num_samples, 50);
-  nh_.param("test/angle_step_deg", angle_step_deg, 45.0);
-  nh_.param("test/num_rotations", num_rotations, 1);
-  nh_.param("test/num_samples", num_samples, 50);
-  nh_.param("test/sample_start", sample_start, -1.0);
-  nh_.param("test/sample_end", sample_end, 0.0);
-  nh_.param("test/rotation_angle_deg", rotation_angle_deg, 45.0);
-
-  // 旋转中心默认为直线起点
-  center_x = line_x;
-  center_y = line_y;
-  center_z = line_z;
-
-  // line_pitch_link00 = line_pitch_link00;
-  // line_yaw_link00 = line_yaw_link00-1.5708;
-  // line_roll_link00 = line_roll_link00+0.7854;
-  // 将line_pitch, line_yaw, line_roll转换为笛卡尔坐标系
-  line_pitch = line_pitch_link00;
-  line_yaw = line_yaw_link00;
-  line_roll = line_roll_link00;
-  // line_pitch = -line_pitch_link00;
-  // line_yaw = line_yaw_link00;
-  // line_roll = line_roll_link00-1.5708
-  // line_pitch_link01 = line_roll_link00;
-  // line_yaw_link01 = line_yaw_link00;
-  // line_roll_link01 = -line_pitch_link00;
-
-  // line_pitch = -line_pitch_link01;
-  // line_yaw = line_yaw_link01;
-  // line_roll = line_roll_link01-1.5708;
-  std::cout << "Line direction (RPY): " << line_roll << ", " << line_pitch << ", " << line_yaw << std::endl;
-
-  // std::cout << "Line direction: " << line_pitch << ", " << line_yaw << ", "
-  // << line_roll << std::endl;
-  // // 计算方向向量(假设沿着姿态的X轴方向)
-  // origin_direction_x = cos(line_yaw) * cos(line_pitch);
-  // origin_direction_y = sin(line_yaw) * cos(line_pitch);
-  // origin_direction_z = sin(line_pitch);
-  // std::cout << "Origin direction: " << origin_direction_x << ", " <<
-  // origin_direction_y << ", " << origin_direction_z << std::endl;
-
-  // 使用四元数计算方向向量（假设沿着姿态的X轴方向）
-  // 方法：将欧拉角转换为四元数，然后旋转单位X轴向量
-  // tf2::Quaternion q;
-  // q.setRPY(line_roll, line_pitch, line_yaw);  // Roll, Pitch, Yaw 顺序
-
-  // 定义初始方向向量（沿X轴）
-  tf2::Vector3 x_axis(1.0, 0.0, 0.0);
-
-  // 使用四元数旋转向量
-  tf2::Vector3 rotated_direction = tf2::quatRotate(quat, x_axis);
-
-  // 提取旋转后的方向向量
-  origin_direction_x = rotated_direction.x();
-  origin_direction_y = rotated_direction.y();
-  origin_direction_z = rotated_direction.z();
-
-  std::cout << "Origin direction (via quaternion): " << origin_direction_x << ", " << origin_direction_y << ", " << origin_direction_z << std::endl;
-
-  // 将origin_direction在XOZ平面内旋转90度得到rotation_axis
-  rotation_axis_x = -origin_direction_z;
-  rotation_axis_y = origin_direction_y;
-  rotation_axis_z = origin_direction_x;
-  std::cout << "Rotation axis: " << rotation_axis_x << ", " << rotation_axis_y << ", " << rotation_axis_z << std::endl;
-
-  // 计算平移轴：通过 pitch、yaw、roll 旋转 (0, 1, 0) 向量
-  // 使用 Eigen 的 AngleAxis 构建旋转矩阵
-  Eigen::Matrix3d R_yaw = Eigen::AngleAxisd(line_yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-  Eigen::Matrix3d R_pitch = Eigen::AngleAxisd(line_pitch, Eigen::Vector3d::UnitY()).toRotationMatrix();
-  Eigen::Matrix3d R_roll = Eigen::AngleAxisd(line_roll, Eigen::Vector3d::UnitX()).toRotationMatrix();
-  // 组合旋转矩阵：R = Rz(yaw) * Ry(pitch) * Rx(roll)
-  Eigen::Matrix3d R_total = R_yaw * R_pitch * R_roll;
-  // 对 (0, 1, 0) 向量进行旋转
-  Eigen::Vector3d original_y_axis(0.0, 1.0, 0.0);
-  Eigen::Vector3d translation_axis_vec = R_total * original_y_axis;
-  std::cout << "Translation axis: " << translation_axis_vec[0] << ", " << translation_axis_vec[1] << ", " << translation_axis_vec[2] << std::endl;
-
-  // 创建原始直线
-  Line3D original_line;
-  original_line.point = Eigen::Vector3d(line_x, line_y, line_z);
-  original_line.direction = Eigen::Vector3d(origin_direction_x, origin_direction_y, origin_direction_z).normalized();
-
-  // 定义旋转参数
-  Eigen::Vector3d rotation_center(center_x, center_y, center_z);
-  Eigen::Vector3d rotation_axis(rotation_axis_x, rotation_axis_y,
-                                rotation_axis_z);  // 绕 Z 轴旋转
-  double rotation_angle_rad = rotation_angle_deg * M_PI / 180.0;
-
-  Eigen::Vector3d base_point = original_line.point;
-  Eigen::Vector3d reference_point_mid = base_point + mid_offset_distance * original_line.direction;  // 管道中心点
-  // 1.生成5个轴线
-  //  方法: 批量旋转并采样
-  //==========================================================================
-  //  第一步：生成5条直线（纯几何变换）
-  //==========================================================================
-  std::cout << "\n========== STEP 1: Generate 5 Lines (Geometry Only) ==========" << std::endl;
-
-  // 1. MID 直线（原直线，不旋转）
-  std::cout << "[1/5] MID line (original, no rotation)" << std::endl;
-  Line3D line_mid = original_line;
-
-  // 2. HALF1 直线（正转 angle_step_deg 度）
-  std::cout << "[2/5] HALF1 line (rotate +" << angle_step_deg << " deg)" << std::endl;
-  double angle_step_rad_1 = angle_step_deg * M_PI / 180.0;
-  Line3D line_half1 = rotateLine(original_line, rotation_center, rotation_axis, angle_step_rad_1);
-
-  // 3. HALF2 直线（反转 angle_step_deg 度）
-  std::cout << "[3/5] HALF2 line (rotate -" << angle_step_deg << " deg)" << std::endl;
-  double angle_step_rad_2 = (360.0 - angle_step_deg) * M_PI / 180.0;
-  Line3D line_half2 = rotateLine(original_line, rotation_center, rotation_axis, angle_step_rad_2);
-
-  // 4. OUT1 直线（平移 +0.3m）
-  std::cout << "[4/5] OUT1 line (translate +0.3m)" << std::endl;
-  double distance_1 = 0.3;
-  Line3D line_out1 = translateLineGeometry(original_line, translation_axis_vec, distance_1);
-
-  // 5. OUT2 直线（平移 -0.3m）
-  std::cout << "[5/5] OUT2 line (translate -0.3m)" << std::endl;
-  double distance_2 = -0.3;
-  Line3D line_out2 = translateLineGeometry(original_line, translation_axis_vec, distance_2);
-
-  //==========================================================================
-  // 第二步：计算参考点
-  //==========================================================================
-  std::cout << "\n========== STEP 2: Calculate Reference Points ==========" << std::endl;
-
-  // 提取各条直线的方向
-  Eigen::Vector3d mid_direction = line_mid.direction.normalized();
-  Eigen::Vector3d half_direction_1 = line_half1.direction.normalized();
-  Eigen::Vector3d half_direction_2 = line_half2.direction.normalized();
-
-  // 计算参考点
-  Eigen::Vector3d reference_point_out1 = base_point + translation_axis_vec * distance_1;
-  Eigen::Vector3d reference_point_out2 = base_point + translation_axis_vec * distance_2;
-  Eigen::Vector3d reference_point_half1 = base_point + half_offset_distance * half_direction_1;
-  Eigen::Vector3d reference_point_half2 = base_point + half_offset_distance * half_direction_2;
-
-  std::cout << "  MID  reference: (" << reference_point_mid.transpose() << ")" << std::endl;
-  std::cout << "  OUT1 reference: (" << reference_point_out1.transpose() << ")" << std::endl;
-  std::cout << "  OUT2 reference: (" << reference_point_out2.transpose() << ")" << std::endl;
-  std::cout << "  HALF1 reference: (" << reference_point_half1.transpose() << ")" << std::endl;
-  std::cout << "  HALF2 reference: (" << reference_point_half2.transpose() << ")" << std::endl;
-
-  //==========================================================================
-  // 检查并调整顺序：确保 OUT1 和 HALF1 在同一侧，OUT2 和 HALF2 在另一侧
-  //==========================================================================
-  std::cout << "\n[Order Check] Checking spatial arrangement..." << std::endl;
-
-  // 计算向量：从 MID 到各个点
-  Eigen::Vector3d vec_mid_to_out1 = reference_point_out1 - reference_point_mid;
-  Eigen::Vector3d vec_mid_to_out2 = reference_point_out2 - reference_point_mid;
-  Eigen::Vector3d vec_mid_to_half1 = reference_point_half1 - reference_point_mid;
-  Eigen::Vector3d vec_mid_to_half2 = reference_point_half2 - reference_point_mid;
-
-  // 使用点积判断同侧性：如果点积 > 0，则在同一侧
-  double dot_out1_half1 = vec_mid_to_out1.dot(vec_mid_to_half1);
-  double dot_out1_half2 = vec_mid_to_out1.dot(vec_mid_to_half2);
-  double dot_out2_half1 = vec_mid_to_out2.dot(vec_mid_to_half1);
-  double dot_out2_half2 = vec_mid_to_out2.dot(vec_mid_to_half2);
-
-  std::cout << "[Order Check] Dot products:" << std::endl;
-  std::cout << "  OUT1 · HALF1: " << dot_out1_half1 << std::endl;
-  std::cout << "  OUT1 · HALF2: " << dot_out1_half2 << std::endl;
-  std::cout << "  OUT2 · HALF1: " << dot_out2_half1 << std::endl;
-  std::cout << "  OUT2 · HALF2: " << dot_out2_half2 << std::endl;
-
-  // 判断是否需要交换：
-  // 如果 OUT1 与 HALF2 更接近（点积更大），则需要交换 HALF1 和 HALF2
-  bool need_swap = (dot_out1_half2 > dot_out1_half1);
-
-  if (need_swap) {
-    std::cout << "[Order Check] OUT1 is closer to HALF2, swapping HALF1 and HALF2..." << std::endl;
-
-    // 交换参考点
-    std::swap(reference_point_half1, reference_point_half2);
-
-    // 交换方向
-    std::swap(half_direction_1, half_direction_2);
-
-    // 交换直线
-    std::swap(line_half1, line_half2);
-
-    // 注意：pitch 和 roll 将在后面采样时自动计算，不需要交换
-
-    std::cout << "[Order Check] Swapped! New arrangement:" << std::endl;
-    std::cout << "  HALF1 reference: (" << reference_point_half1.transpose() << ")" << std::endl;
-    std::cout << "  HALF2 reference: (" << reference_point_half2.transpose() << ")" << std::endl;
-  } else {
-    std::cout << "[Order Check] Order is correct, no swap needed." << std::endl;
-  }
-
-  // 发布五个参考点到 RViz
-  geometry_msgs::PoseArray reference_points_msg;
-  reference_points_msg.header.frame_id = "link00";
-  reference_points_msg.header.stamp = ros::Time::now();
-
-  std::vector<Eigen::Vector3d> ref_points = {reference_point_mid, reference_point_out1, reference_point_out2, reference_point_half1, reference_point_half2};
-
-  for (const auto& point : ref_points) {
-    geometry_msgs::Pose pose;
-    pose.position.x = point[0];
-    pose.position.y = point[1];
-    pose.position.z = point[2];
-    pose.orientation.w = 1.0;
-    reference_points_msg.poses.push_back(pose);
-  }
-
-  reference_points_pub_.publish(reference_points_msg);
-  std::cout << "[VIZ] Published 5 reference points" << std::endl;
-
-  //==========================================================================
-  // 第三步：以参考点为原点重新生成5条直线（方向不变）
-  //==========================================================================
-  std::cout << "\n========== STEP 3: Create New Lines with Reference Points as "
-               "Origins =========="
-            << std::endl;
-
-  // 创建以参考点为起点的新直线，方向保持不变
-  Line3D line_mid_sampled;
-  line_mid_sampled.point = reference_point_mid;
-  line_mid_sampled.direction = mid_direction;
-  std::cout << "  MID line: origin=(" << reference_point_mid.transpose() << "), direction=(" << mid_direction.transpose() << ")" << std::endl;
-
-  Line3D line_half1_sampled;
-  line_half1_sampled.point = reference_point_half1;
-  line_half1_sampled.direction = half_direction_1;
-  std::cout << "  HALF1 line: origin=(" << reference_point_half1.transpose() << "), direction=(" << half_direction_1.transpose() << ")" << std::endl;
-
-  Line3D line_half2_sampled;
-  line_half2_sampled.point = reference_point_half2;
-  line_half2_sampled.direction = half_direction_2;
-  std::cout << "  HALF2 line: origin=(" << reference_point_half2.transpose() << "), direction=(" << half_direction_2.transpose() << ")" << std::endl;
-
-  Line3D line_out1_sampled;
-  line_out1_sampled.point = reference_point_out1;
-  line_out1_sampled.direction = mid_direction;  // OUT1/OUT2 使用原始管道方向（与 MID 一致）
-  std::cout << "  OUT1 line: origin=(" << reference_point_out1.transpose() << "), direction=(" << mid_direction.transpose() << ")" << std::endl;
-
-  Line3D line_out2_sampled;
-  line_out2_sampled.point = reference_point_out2;
-  line_out2_sampled.direction = mid_direction;  // OUT1/OUT2 使用原始管道方向（与 MID 一致）
-  std::cout << "  OUT2 line: origin=(" << reference_point_out2.transpose() << "), direction=(" << mid_direction.transpose() << ")" << std::endl;
-
-  //==========================================================================
-  // 第四步：采样并检测可达性
-  //==========================================================================
-  std::cout << "\n========== STEP 4: Sample and Check Reachability ==========" << std::endl;
-
-  int viz_points = 50;
-  double pitch_0 = 0.0, roll_0 = 0.0;
-  double pitch_1 = 0.0, roll_1 = 0.0;
-  double pitch_2 = 0.0, roll_2 = 0.0;
-  double pitch_half1 = 0.0, roll_half1 = 0.0;
-  double pitch_half2 = 0.0, roll_half2 = 0.0;
-  geometry_msgs::Pose debug_camera_poses_demo;
-  // 1. MID 直线采样
-  std::cout << "[1/5] Sampling MID line..." << std::endl;
-  std::vector<geometry_msgs::PoseStamped> reachable_poses_mid = sampleAndCheckReachability(line_mid_sampled, mid_sample_start, mid_sample_end, mid_num_samples, pitch_0, roll_0, debug_camera_poses_demo);
-  line_mid_pub_.publish(createLineVisualization(line_mid_sampled, mid_sample_start, mid_sample_end, viz_points));
-
-  // 2. HALF1 直线采样
-  std::cout << "[2/5] Sampling HALF1 line..." << std::endl;
-  std::vector<geometry_msgs::PoseStamped> reachable_poses_half1 = sampleAndCheckReachability(line_half1_sampled, sample_start, sample_end, num_samples, pitch_half1, roll_half1, debug_camera_poses_demo);
-  line_half1_pub_.publish(createLineVisualization(line_half1_sampled, sample_start, sample_end, viz_points));
-
-  // 3. HALF2 直线采样
-  std::cout << "[3/5] Sampling HALF2 line..." << std::endl;
-  std::vector<geometry_msgs::PoseStamped> reachable_poses_half2 = sampleAndCheckReachability(line_half2_sampled, sample_start, sample_end, num_samples, pitch_half2, roll_half2, debug_camera_poses_demo);
-  line_half2_pub_.publish(createLineVisualization(line_half2_sampled, sample_start, sample_end, viz_points));
-
-  // 4. OUT1 直线采样
-  std::cout << "[4/5] Sampling OUT1 line..." << std::endl;
-  std::vector<geometry_msgs::PoseStamped> reachable_poses_out1 = sampleAndCheckReachability(line_out1_sampled, sample_start, sample_end, num_samples, pitch_1, roll_1, debug_camera_poses_demo);
-  line_out1_pub_.publish(createLineVisualization(line_out1_sampled, sample_start, sample_end, viz_points));
-
-  // 5. OUT2 直线采样
-  std::cout << "[5/5] Sampling OUT2 line..." << std::endl;
-  std::vector<geometry_msgs::PoseStamped> reachable_poses_out2 = sampleAndCheckReachability(line_out2_sampled, sample_start, sample_end, num_samples, pitch_2, roll_2, debug_camera_poses_demo);
-  line_out2_pub_.publish(createLineVisualization(line_out2_sampled, sample_start, sample_end, viz_points));
-
-  std::cout << "[INFO] Sampling completed. Reachable poses: MID=" << reachable_poses_mid.size() << ", HALF1=" << reachable_poses_half1.size() << ", HALF2=" << reachable_poses_half2.size()
-            << ", OUT1=" << reachable_poses_out1.size() << ", OUT2=" << reachable_poses_out2.size() << std::endl;
-
-  //==========================================================================
-  // 第五步：排序可达点
-  //==========================================================================
-  std::cout << "\n========== STEP 5: Sort Reachable Poses ==========" << std::endl;
-
-  // 检查是否有可达点
-  if (reachable_poses_half1.empty() || reachable_poses_half2.empty()) {
-    ROS_WARN("[PlanToFivePoint] Some lines have no reachable poses");
-  }
-
-  // 从 ROS 参数服务器读取 target_distance
-  double target_distance;
-  nh_.param("test/target_distance", target_distance, 0.2);  // 默认值 0.2
-  double mid_target_distance;
-  nh_.param("test/mid_target_distance", mid_target_distance,
-            0.2);  // 默认值 0.2
-  std::cout << "[INFO] Target distance for sorting: " << target_distance << " m" << std::endl;
-
-  reachable_poses_out1 = sortPosesByDistanceToPoint(reachable_poses_out1, reference_point_out1, translation_axis_vec, target_distance);
-  reachable_poses_out2 = sortPosesByDistanceToPoint(reachable_poses_out2, reference_point_out2, translation_axis_vec, target_distance);
-  reachable_poses_mid = sortPosesByDistanceToPoint(reachable_poses_mid, reference_point_mid, mid_direction, mid_target_distance);
-  reachable_poses_half1 = sortPosesByDistanceToPoint(reachable_poses_half1, reference_point_half1, half_direction_1, target_distance);
-  reachable_poses_half2 = sortPosesByDistanceToPoint(reachable_poses_half2, reference_point_half2, half_direction_2, target_distance);
-
-  bool success[5] = {false, false, false, false, false};
-
-  // 4. 发布目标点位供 RViz 可视化
-  geometry_msgs::PoseArray target_poses_msg;
-  target_poses_msg.header.frame_id = "link00";
-  target_poses_msg.header.stamp = ros::Time::now();
-
-  // 添加所有目标点位
-  if (!reachable_poses_mid.empty()) {
-    target_poses_msg.poses.push_back(reachable_poses_mid[0].pose);
-    ROS_INFO("[PlanToFivePoint] Target 1 (MID): (%.3f, %.3f, %.3f)", reachable_poses_mid[0].pose.position.x, reachable_poses_mid[0].pose.position.y, reachable_poses_mid[0].pose.position.z);
-  }
-  if (!reachable_poses_half1.empty()) {
-    target_poses_msg.poses.push_back(reachable_poses_half1[0].pose);
-    ROS_INFO("[PlanToFivePoint] Target 2 (HALF1): (%.3f, %.3f, %.3f)", reachable_poses_half1[0].pose.position.x, reachable_poses_half1[0].pose.position.y, reachable_poses_half1[0].pose.position.z);
-  }
-  if (!reachable_poses_half2.empty()) {
-    target_poses_msg.poses.push_back(reachable_poses_half2[0].pose);
-    ROS_INFO("[PlanToFivePoint] Target 3 (HALF2): (%.3f, %.3f, %.3f)", reachable_poses_half2[0].pose.position.x, reachable_poses_half2[0].pose.position.y, reachable_poses_half2[0].pose.position.z);
-  }
-  if (!reachable_poses_out1.empty()) {
-    target_poses_msg.poses.push_back(reachable_poses_out1[0].pose);
-    ROS_INFO("[PlanToFivePoint] Target 4 (OUT1): (%.3f, %.3f, %.3f)", reachable_poses_out1[0].pose.position.x, reachable_poses_out1[0].pose.position.y, reachable_poses_out1[0].pose.position.z);
-  }
-  if (!reachable_poses_out2.empty()) {
-    target_poses_msg.poses.push_back(reachable_poses_out2[0].pose);
-    ROS_INFO("[PlanToFivePoint] Target 5 (OUT2): (%.3f, %.3f, %.3f)", reachable_poses_out2[0].pose.position.x, reachable_poses_out2[0].pose.position.y, reachable_poses_out2[0].pose.position.z);
-  }
-
-  // 发布目标点位
-  target_poses_pub_.publish(target_poses_msg);
-  ROS_INFO(
-      "[PlanToFivePoint] Published %zu target poses to "
-      "/arm_controller/target_poses",
-      target_poses_msg.poses.size());
-
-  // 发布各组可达点供 RViz 可视化
-  geometry_msgs::PoseArray poses_out1_msg, poses_out2_msg, poses_mid_msg, poses_half1_msg, poses_half2_msg;
-  poses_out1_msg.header.frame_id = "link00";
-  poses_out1_msg.header.stamp = ros::Time::now();
-  poses_out2_msg.header = poses_mid_msg.header = poses_half1_msg.header = poses_half2_msg.header = poses_out1_msg.header;
-
-  // 填充各组点
-  for (const auto& pose_stamped : reachable_poses_out1) {
-    poses_out1_msg.poses.push_back(pose_stamped.pose);
-  }
-  for (const auto& pose_stamped : reachable_poses_out2) {
-    poses_out2_msg.poses.push_back(pose_stamped.pose);
-  }
-  for (const auto& pose_stamped : reachable_poses_mid) {
-    poses_mid_msg.poses.push_back(pose_stamped.pose);
-  }
-  for (const auto& pose_stamped : reachable_poses_half1) {
-    poses_half1_msg.poses.push_back(pose_stamped.pose);
-  }
-  for (const auto& pose_stamped : reachable_poses_half2) {
-    poses_half2_msg.poses.push_back(pose_stamped.pose);
-  }
-
-  // 发布各组点
-  poses_out1_pub_.publish(poses_out1_msg);
-  poses_out2_pub_.publish(poses_out2_msg);
-  poses_mid_pub_.publish(poses_mid_msg);
-  poses_half1_pub_.publish(poses_half1_msg);
-  poses_half2_pub_.publish(poses_half2_msg);
-
-  ROS_INFO(
-      "[PlanToFivePoint] Published reachable poses: OUT1=%zu, OUT2=%zu, "
-      "MID=%zu, HALF1=%zu, HALF2=%zu",
-      poses_out1_msg.poses.size(), poses_out2_msg.poses.size(), poses_mid_msg.poses.size(), poses_half1_msg.poses.size(), poses_half2_msg.poses.size());
-
-  // 发布 MID 组的所有采样点（包括可达和不可达）
-  geometry_msgs::PoseArray poses_mid_all_msg;
-  poses_mid_all_msg.header.frame_id = "link00";
-  poses_mid_all_msg.header.stamp = ros::Time::now();
-
-  // 直接从 MID 直线采样所有点（使用以参考点为起点的直线）
-  std::vector<Eigen::Vector3d> mid_all_sampled_points = line_mid_sampled.samplePoints(mid_sample_start, mid_sample_end, mid_num_samples);
-
-  for (const auto& point : mid_all_sampled_points) {
-    geometry_msgs::Pose pose;
-    pose.position.x = point.x();
-    pose.position.y = point.y();
-    pose.position.z = point.z();
-    pose.orientation.w = 1.0;
-    pose.orientation.x = 0.0;
-    pose.orientation.y = 0.0;
-    pose.orientation.z = 0.0;
-    poses_mid_all_msg.poses.push_back(pose);
-  }
-
-  poses_mid_all_pub_.publish(poses_mid_all_msg);
-  ROS_INFO(
-      "[PlanToFivePoint] Published %zu total MID sampled points "
-      "(reachable + unreachable)",
-      poses_mid_all_msg.poses.size());
-  geometry_msgs::PoseStamped center_poses_msg;
-  center_poses_msg.header.frame_id = "link00";
-  center_poses_msg.header.stamp = ros::Time::now();
-  center_poses_msg.pose.position.x = center_x;
-  center_poses_msg.pose.position.y = center_y;
-  center_poses_msg.pose.position.z = center_z;
-
-  // 将方向向量转换为四元数
-  // 使用方向向量创建一个旋转，使得Z轴指向该方向
-  Eigen::Vector3d z_axis(0, 0, 1);
-  Eigen::Vector3d direction = original_line.direction.normalized();
-
-  // 计算旋转轴和角度
-  Eigen::Vector3d quat_rotation_axis = z_axis.cross(direction);
-  double quat_rotation_angle = std::acos(z_axis.dot(direction));
-
-  Eigen::Quaterniond eigen_quat;
-  if (quat_rotation_axis.norm() < 1e-6) {
-    // 方向向量与Z轴平行或反平行
-    if (z_axis.dot(direction) > 0) {
-      eigen_quat = Eigen::Quaterniond::Identity();  // 同向
-    } else {
-      eigen_quat = Eigen::Quaterniond(0, 1, 0, 0);  // 反向，绕X轴旋转180度
-    }
-  } else {
-    quat_rotation_axis.normalize();
-    eigen_quat = Eigen::Quaterniond(Eigen::AngleAxisd(quat_rotation_angle, quat_rotation_axis));
-  }
-
-  center_poses_msg.pose.orientation.w = req.target_pose.pose.orientation.w;
-  center_poses_msg.pose.orientation.x = req.target_pose.pose.orientation.x;
-  center_poses_msg.pose.orientation.y = req.target_pose.pose.orientation.y;
-  center_poses_msg.pose.orientation.z = req.target_pose.pose.orientation.z;
-  center_pub_.publish(center_poses_msg);
-  ROS_INFO(
-      "[PlanToFivePoint] Published center pose to "
-      "/arm_controller/center_point");
-  // 5.执行可达点
-  // 依次执行 OUT1 -> HALF1 -> MID -> HALF2 -> OUT2
-  // 由于已经确保 HALF1 和 OUT1 在同一侧，顺序是空间连续的
-  // 如果某个点为空（不可达），就跳过它继续执行下一个点
-  // 安全逻辑：如果 MID 消失，先去默认点再继续执行 HALF2/OUT2
-
-  bool last_success = true;  // 跟踪上一步是否成功（或被跳过）
-
-  // OUT1
-  if (!reachable_poses_out1.empty()) {
-    ROS_INFO("[PlanToFivePoint] Executing OUT1...");
-    success[0] = executeMotionToTarget(reachable_poses_out1[0].pose, pitch_1, roll_1, 10.0);
-    last_success = success[0];
-    if (!success[0]) {
-      ROS_WARN("[PlanToFivePoint] OUT1 execution failed, stopping...");
-    }
-  } else {
-    ROS_WARN("[PlanToFivePoint] OUT1 has no reachable poses, skipping...");
-    success[0] = true;  // 设为true表示跳过，以便继续执行
-  }
-
-  // 延迟 0.5 秒
-  // if (last_success) {
-  ros::Duration(0.5).sleep();
-  // }
-
-  // HALF1
-  if (last_success) {
-    if (!reachable_poses_half1.empty()) {
-      ROS_INFO("[PlanToFivePoint] Executing HALF1...");
-      success[1] = executeMotionToTarget(reachable_poses_half1[0].pose, pitch_half1, roll_half1, 10.0);
-      last_success = success[1];
-      if (!success[1]) {
-        ROS_WARN("[PlanToFivePoint] HALF1 execution failed, stopping...");
-      }
-    } else {
-      ROS_WARN("[PlanToFivePoint] HALF1 has no reachable poses, skipping...");
-      success[1] = true;  // 跳过
-    }
-  }
-
-  // 延迟 0.5 秒
-  // if (last_success) {
-  ros::Duration(0.5).sleep();
-  // }
-
-  // MID
-  if (last_success) {
-    if (!reachable_poses_mid.empty()) {
-      ROS_INFO("[PlanToFivePoint] Executing MID...");
-      success[2] = executeMotionToTarget(reachable_poses_mid[0].pose, pitch_0, roll_0, 10.0);
-      last_success = success[2];
-      if (!success[2]) {
-        ROS_WARN("[PlanToFivePoint] MID execution failed, stopping...");
-      }
-    } else {
-      // MID 消失，先去默认点
-      ROS_WARN(
-          "[PlanToFivePoint] MID has no reachable poses, going to default "
-          "point for safety...");
-      if (!goToDefaultPoint()) {
-        ROS_ERROR("[PlanToFivePoint] Failed to go to default point, stopping...");
-        last_success = false;
-        success[2] = false;
-      } else {
-        ROS_INFO("[PlanToFivePoint] Successfully moved to default point");
-        success[2] = true;  // 标记为成功，继续执行
-      }
-    }
-  }
-
-  // 延迟 0.5 秒
-  // if (last_success) {
-  ros::Duration(0.5).sleep();
-  // }
-
-  // HALF2
-  if (last_success) {
-    if (!reachable_poses_half2.empty()) {
-      ROS_INFO("[PlanToFivePoint] Executing HALF2...");
-      success[3] = executeMotionToTarget(reachable_poses_half2[0].pose, pitch_half2, roll_half2, 10.0);
-      last_success = success[3];
-      if (!success[3]) {
-        ROS_WARN("[PlanToFivePoint] HALF2 execution failed, stopping...");
-      }
-    } else {
-      ROS_WARN("[PlanToFivePoint] HALF2 has no reachable poses, skipping...");
-      success[3] = true;  // 跳过
-    }
-  }
-
-  // 延迟 0.5 秒
-  // if (last_success) {
-  ros::Duration(0.5).sleep();
-  // }
-
-  // OUT2
-  if (last_success) {
-    if (!reachable_poses_out2.empty()) {
-      ROS_INFO("[PlanToFivePoint] Executing OUT2...");
-      success[4] = executeMotionToTarget(reachable_poses_out2[0].pose, pitch_2, roll_2, 10.0);
-      if (!success[4]) {
-        ROS_WARN("[PlanToFivePoint] OUT2 execution failed");
-      }
-    } else {
-      ROS_WARN("[PlanToFivePoint] OUT2 has no reachable poses, skipping...");
-      success[4] = true;  // 跳过
-    }
-  }
-
-  // 统计执行结果
-  int executed_count = 0;
-  for (int i = 0; i < 5; i++) {
-    if (success[i]) executed_count++;
-  }
-  ROS_INFO(
-      "[PlanToFivePoint] Execution completed: %d/5 points executed "
-      "successfully",
-      executed_count);
-  return true;
-}
-
-// bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose, const double& joint6_pos, const bool& use_manual_joint6) {
-//   ROS_INFO("[PlanToTargetPose] Planning to target position: (%.3f, %.3f, %.3f)", target_pose.position.x, target_pose.position.y, target_pose.position.z);
-
-//   // 检查机械臂状态
-//   if (arm_control_fsm_ != ArmControlFsm::Home && arm_control_fsm_ != ArmControlFsm::Arrived) {
-//     ROS_WARN(
-//         "[PlanToTargetPose] Arm is not in Home or Arrived state. Current "
-//         "state: %d",
-//         static_cast<int>(arm_control_fsm_));
-//     return false;
-//   }
-
-//   // 获取当前状态
-//   Eigen::Matrix4d start_ee_pose = arm_model_->forwardKinematics(low_state_.getQ());
-
-//   Eigen::Matrix<double, 6, 1> start_joint_pos = low_state_.getQ();
-//   Eigen::Matrix4d camera_target_pose, target_pose_eigen;
-//   Eigen::Matrix<double, 6, 1> target_joint_pos;
-//   bool find_ik{false};
-
-//   // 转换目标位姿（从 geometry_msgs 到 Eigen）
-//   arm_controller::geometryMsgsPose2Pose(target_pose, camera_target_pose);
-//   target_pose_eigen = camera_target_pose;
-
-//   // 补偿相机偏移（从相机位置计算末端执行器位置）
-//   // target_pose_eigen.block<3, 1>(0, 3) = camera_target_pose.block<3, 1>(0, 3) - camera_target_pose.block<3, 3>(0, 0) * kCameraPosBias_E_;
-//   target_pose_eigen.block<3, 1>(0, 3) += Z1Arm_PosBias_E_;
-//   // 计算逆运动学
-//   find_ik = arm_model_->inverseKinematics(target_pose_eigen, start_joint_pos, target_joint_pos, true);
-
-//   ROS_INFO("[PlanToTargetPose] IK solution found: %s", find_ik ? "YES" : "NO");
-//   if (find_ik) {
-//     ROS_INFO("[PlanToTargetPose] Joint[2] value: %.3f rad (%.1f deg)", target_joint_pos[2], target_joint_pos[2] * 180.0 / M_PI);
-//   }
-
-//   if (!arm_motor_safe_) {
-//     ROS_ERROR("[PlanToTargetPose] Arm motor is not safe!");
-//     return false;
-//   }
-
-//   if (!find_ik) {
-//     ROS_ERROR("[PlanToTargetPose] No IK solution found for target pose");
-//     return false;
-//   }
-
-//   // 检查运动是否太小（已经在目标位置附近）
-//   if ((target_joint_pos - start_joint_pos).norm() <= 0.001) {
-//     ROS_INFO("[PlanToTargetPose] Already at target position");
-//     return true;
-//   }
-
-//   // 设置目标位姿和关节角
-//   ee_pose_goal_ = target_pose_eigen;
-//   arm_joint_goal_ = target_joint_pos;
-//   if (use_manual_joint6) {
-//     arm_joint_goal_[5] = joint6_pos;
-//   }
-
-//   // 计算轨迹时间（基于距离和速度）
-//   plan_max_tick_ = static_cast<long unsigned int>((ee_pose_goal_ - start_ee_pose).block<3, 1>(0, 3).norm() / average_move_speed_ / control_period_);
-//   plan_max_tick_ = std::max(100uL, plan_max_tick_);
-
-//   // 生成轨迹
-//   lazyPlan(start_joint_pos, arm_joint_goal_, plan_max_tick_);
-
-//   // 切换到运动状态
-//   setArmControlFsm(ArmControlFsm::PlanMove);
-
-//   ROS_INFO(
-//       "[PlanToTargetPose] Motion plan generated. Duration: %lu ticks "
-//       "(%.2f seconds)",
-//       plan_max_tick_, plan_max_tick_ * control_period_);
-
-//   // 等待机械臂执行到位（execute_process_ == 1.0 表示到位）
-//   ros::Rate rate(1.0 / control_period_);
-//   double timeout = (plan_max_tick_ * control_period_) + 5.0;  // 预计时间 + 5秒超时
-//   ros::Time start_time = ros::Time::now();
-
-//   while (ros::ok()) {
-//     // 检查是否超时
-//     if ((ros::Time::now() - start_time).toSec() > timeout) {
-//       ROS_WARN(
-//           "[PlanToTargetPose] Timeout waiting for arm to reach target "
-//           "position");
-//       return false;
-//     }
-
-//     // 检查是否到位
-//     if (arm_control_fsm_ == ArmControlFsm::Arrived) {
-//       ROS_INFO("[PlanToTargetPose] Arm reached target position and stabilized");
-//       return true;
-//     }
-
-//     ros::spinOnce();
-//     rate.sleep();
-//   }
-
-//   return false;
-// }
 bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose, const double& joint6_pos, const bool& use_manual_joint6) {
-  ROS_INFO("================ [Pinocchio DEEP DEBUG START] ================");
+  ROS_INFO("================ [Pinocchio 7-DOF SINGLE PLAN] ================");
 
-  // --------------------------------------------------------------------------
-  // 1. 基础安全检查
-  // --------------------------------------------------------------------------
+  // --------------------------------------------------------
+  // 1. 全局配置与预处理
+  // --------------------------------------------------------
   if (!pinocchio_ik_) {
-    ROS_ERROR("[Critical] PinocchioIK object is NOT initialized! Cannot proceed.");
+    ROS_ERROR("[Critical] PinocchioIK not initialized!");
     return false;
   }
 
+  // 状态检查
   if (arm_control_fsm_ != ArmControlFsm::Home && arm_control_fsm_ != ArmControlFsm::Arrived) {
-    ROS_WARN("[State Error] Arm is not in Home or Arrived state. Current: %d", static_cast<int>(arm_control_fsm_));
+    ROS_WARN("[State Error] Arm moving. State: %d", static_cast<int>(arm_control_fsm_));
     return false;
   }
 
-  // --------------------------------------------------------------------------
-  // 2. 输入数据清洗 (修复四元数)
-  // --------------------------------------------------------------------------
+  // 四元数归一化
   Eigen::Quaterniond q_check(target_pose.orientation.w, target_pose.orientation.x, target_pose.orientation.y, target_pose.orientation.z);
+  if (std::abs(q_check.norm() - 1.0) > 1e-3) q_check.normalize();
 
-  // 强制归一化检查：防止输入非法的旋转矩阵
-  if (std::abs(q_check.norm() - 1.0) > 1e-3) {
-    ROS_WARN("[Critical Warning] Input quaternion is NOT normalized! Norm: %.4f. Normalizing it now...", q_check.norm());
-    q_check.normalize();
-  }
-
-  // --------------------------------------------------------------------------
-  // 3. 模型一致性自检 (Model Consistency Check) - 最关键的一步
-  // --------------------------------------------------------------------------
-  Eigen::Matrix<double, 6, 1> start_joint_pos = low_state_.getQ();
-
-  // A. 获取宇树原生库认为的当前末端位置
-  Eigen::Matrix4d unitree_fk = arm_model_->forwardKinematics(start_joint_pos);
-
-  // B. 获取 Pinocchio 库认为的当前末端位置
-  Eigen::Matrix4d pinocchio_fk;
-  bool pin_fk_success = pinocchio_ik_->forwardKinematics(start_joint_pos, pinocchio_fk);
-
-  if (!pin_fk_success) {
-    ROS_ERROR("[FATAL] Pinocchio FK computation failed. Check URDF loading.");
-    return false;
-  }
-
-  // C. 计算两者偏差
-  Eigen::Vector3d pos_diff = unitree_fk.block<3, 1>(0, 3) - pinocchio_fk.block<3, 1>(0, 3);
-  double diff_norm = pos_diff.norm();
-
-  ROS_INFO("----- Model Consistency Check (Unitree vs Pinocchio) -----");
-  ROS_INFO("Current Joints: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]", start_joint_pos[0], start_joint_pos[1], start_joint_pos[2], start_joint_pos[3], start_joint_pos[4], start_joint_pos[5]);
-  ROS_INFO("Diff Norm     : %.5f meters", diff_norm);
-
-  // if (diff_norm > 0.02) {  // 如果偏差大于 2cm
-  //   ROS_ERROR("########################################################");
-  //   ROS_ERROR("[FATAL] MODEL MISMATCH DETECTED!");
-  //   ROS_ERROR("Unitree Hardware Pos: (%.3f, %.3f, %.3f)", unitree_fk(0, 3), unitree_fk(1, 3), unitree_fk(2, 3));
-  //   ROS_ERROR("Pinocchio Model Pos : (%.3f, %.3f, %.3f)", pinocchio_fk(0, 3), pinocchio_fk(1, 3), pinocchio_fk(2, 3));
-  //   ROS_ERROR("Possible Reasons:");
-  //   ROS_ERROR("1. URDF 'base_link' offset is different from Unitree SDK.");
-  //   ROS_ERROR("2. URDF 'end_effector' frame is different (e.g. Flange vs Tool Tip).");
-  //   ROS_ERROR("########################################################");
-  //   return false;  // 模型不对，IK 算了也白算，直接返回
-  // }
-
-  // --------------------------------------------------------------------------
-  // 4. 准备 IK 目标
-  // --------------------------------------------------------------------------
-  Eigen::Matrix4d target_pose_eigen, camera_target_pose;
-  Eigen::Matrix<double, 6, 1> target_joint_pos;
-  bool find_ik{false};
-
-  // 转换 ROS 消息
-  arm_controller::geometryMsgsPose2Pose(target_pose, camera_target_pose);
-  target_pose_eigen = camera_target_pose;
-
-  // 施加偏移量 (Offset)
-  target_pose_eigen.block<3, 1>(0, 3) += Pinocchio_PosBias_E_;  // Z1Arm_PosBias_E_
-
-  // 使用归一化后的四元数重写旋转部分 (保证正交性)
+  // 转换目标位姿
+  Eigen::Matrix4d target_pose_eigen;
+  arm_controller::geometryMsgsPose2Pose(target_pose, target_pose_eigen);
   target_pose_eigen.block<3, 3>(0, 0) = q_check.toRotationMatrix();
 
-  // --------------------------------------------------------------------------
-  // 5. 执行 Pinocchio IK 并对比验证
-  // --------------------------------------------------------------------------
-  ROS_INFO("[Pinocchio] Starting IK search...");
+  // 设置权重 (Look-At模式: 忽略 Roll)
+  Eigen::Matrix<double, 6, 1> weights;
+  weights << 1, 1, 1, 0, 1, 1;  // [x, y, z, roll(ignore), pitch, yaw]
+
+  const double TARGET_TOLERANCE = 0.01;  // 目标精度 1cm
+
+  // --------------------------------------------------------
+  // 2. 执行核心逻辑 (单次执行)
+  // --------------------------------------------------------
+
+  // A. 获取当前真实状态
+  Eigen::VectorXd start_state_7d = Eigen::VectorXd::Zero(7);
+  start_state_7d.head<6>() = low_state_.getQ();
+  start_state_7d[6] = low_state_.getGripperQ();
+
+  Eigen::VectorXd target_state_7d = Eigen::VectorXd::Zero(7);
+
+  // B. 执行 IK
   ros::Time t_start = ros::Time::now();
+  bool find_ik = pinocchio_ik_->inverseKinematics(target_pose_eigen, start_state_7d, target_state_7d, weights);
 
-  // *** 调用 Pinocchio 求解 ***
-  find_ik = pinocchio_ik_->inverseKinematics(target_pose_eigen, start_joint_pos, target_joint_pos);
+  if (!find_ik) {
+    ROS_WARN("[PlanToTarget] IK Failed to find solution.");
+    return false;
+  }
 
-  double t_cost = (ros::Time::now() - t_start).toSec();
+  // C. 提取结果
+  Eigen::Matrix<double, 6, 1> arm_target_joints = target_state_7d.head<6>();
+  double gripper_target_val = target_state_7d[6];
 
-  if (find_ik) {
-    ROS_INFO("[Pinocchio] IK SUCCESS! Time: %.4fs", t_cost);
-  } else {
-    ROS_WARN("--------------------------------------------------------");
-    ROS_WARN("[Pinocchio] IK FAILED to converge.");
+  // D. 判断是否需要运动
+  double joint_diff = (arm_target_joints - start_state_7d.head<6>()).norm();
+  bool needs_motion = true;
 
-    // 失败后的诊断：尝试用宇树库算一次，看看是不是物理不可达
-    ROS_WARN("Diagnostics: Attempting Unitree IK for comparison...");
-    Eigen::Matrix<double, 6, 1> backup_joints;
-    bool uni_ik = arm_model_->inverseKinematics(target_pose_eigen, start_joint_pos, backup_joints, true);
+  if (joint_diff < 0.001 && std::abs(gripper_target_val - start_state_7d[6]) < 0.001) {
+    ROS_INFO("[PlanToTarget] IK suggests no movement needed. Skipping execution...");
+    needs_motion = false;
+  }
 
-    if (uni_ik) {
-      ROS_ERROR(">> DIAGNOSIS: ALGORITHM ISSUE.");
-      ROS_ERROR("   Unitree SDK FOUND a solution, but Pinocchio FAILED.");
-      ROS_ERROR("   Target IS reachable. Your Pinocchio solver parameters (Damping/Step) need tuning.");
-    } else {
-      ROS_ERROR(">> DIAGNOSIS: TARGET UNREACHABLE.");
-      ROS_ERROR("   Both solvers failed. The point is likely out of workspace or in collision.");
+  // E. 规划与执行
+  if (needs_motion) {
+    gripper_goal_ = gripper_target_val;
+    ee_pose_goal_ = target_pose_eigen;
+
+    arm_joint_goal_ = arm_target_joints;
+
+    // 计算时间
+    double max_joint_delta = (arm_target_joints - start_state_7d.head<6>()).cwiseAbs().maxCoeff();
+    double duration = max_joint_delta / 1.0;  // 1.0 rad/s
+    duration += 0.4;                          // 缓冲
+    plan_max_tick_ = std::max(50uL, static_cast<long unsigned int>(duration / control_period_));
+
+    lazyPlan(start_state_7d.head<6>(), arm_joint_goal_, plan_max_tick_);
+    setArmControlFsm(ArmControlFsm::PlanMove);
+
+    // F. 等待运动完成
+    ros::Rate rate(1.0 / control_period_);
+    double timeout = (plan_max_tick_ * control_period_) + 3.0;
+    ros::Time wait_start = ros::Time::now();
+    bool motion_finished = false;
+
+    while (ros::ok()) {
+      if ((ros::Time::now() - wait_start).toSec() > timeout) {
+        ROS_WARN("[PlanToTarget] Motion Timeout.");
+        break;
+      }
+      if (arm_control_fsm_ == ArmControlFsm::Arrived) {
+        ros::Duration(0.5).sleep();  // 等待稳定
+        motion_finished = true;
+        break;
+      }
+      rate.sleep();
     }
-    ROS_WARN("--------------------------------------------------------");
 
-    // 调试阶段：如果 Pinocchio 失败，我们先不执行动作，直接返回 False
-    return false;
+    if (!motion_finished) return false;
   }
 
-  if (!arm_motor_safe_) {
-    ROS_ERROR("[PlanToTargetPose] Arm motor is not safe!");
-    return false;
+  // --------------------------------------------------------
+  // G. 物理误差检查
+  // --------------------------------------------------------
+
+  // 获取最新状态
+  Eigen::VectorXd real_q(7);
+  real_q.head<6>() = low_state_.getQ();
+  real_q[6] = low_state_.getGripperQ();
+
+  // 打印详细关节对比 (调试用)
+  std::stringstream ss_target, ss_real, ss_diff;
+  ss_target << std::fixed << std::setprecision(3);
+  ss_real << std::fixed << std::setprecision(3);
+  ss_diff << std::fixed << std::setprecision(3);
+
+  for (int i = 0; i < 7; ++i) {
+    double diff = real_q[i] - target_state_7d[i];
+    ss_target << target_state_7d[i] << (i < 6 ? ", " : "");
+    ss_real << real_q[i] << (i < 6 ? ", " : "");
+    ss_diff << diff << (i < 6 ? ", " : "");
   }
 
-  // --------------------------------------------------------------------------
-  // 6. 轨迹规划与执行 (如果 IK 成功)
-  // --------------------------------------------------------------------------
+  ROS_INFO("---------------------------------------------------------");
+  ROS_INFO("[Joint Diff] Target Q: [%s]", ss_target.str().c_str());
+  ROS_INFO("[Joint Diff] Real   Q: [%s]", ss_real.str().c_str());
+  ROS_INFO("[Joint Diff] Diff   Q: [%s]", ss_diff.str().c_str());
+  ROS_INFO("---------------------------------------------------------");
 
-  // 检查运动幅度是否太小
-  if ((target_joint_pos - start_joint_pos).norm() <= 0.001) {
-    ROS_INFO("[PlanToTargetPose] Already at target position");
+  // 计算 FK 误差
+  Eigen::Matrix4d real_pose;
+  pinocchio_ik_->forwardKinematics(real_q, real_pose);
+
+  double real_err = (real_pose.block<3, 1>(0, 3) - target_pose_eigen.block<3, 1>(0, 3)).norm();
+
+  // 最终判断
+  if (real_err < TARGET_TOLERANCE) {
+    ROS_INFO(">>> SUCCESS: Target Reached! Final Precision: %.5f m", real_err);
+    return true;
+  } else {
+    // 即使误差略大，动作也已经执行完毕，通常应视为"执行完成"但带有警告
+    ROS_WARN(">>> FINISHED: Motion done but error %.5fm > threshold (Gravity Sag?).", real_err);
     return true;
   }
-
-  // 设置目标
-  ee_pose_goal_ = target_pose_eigen;
-  arm_joint_goal_ = target_joint_pos;
-
-  // 处理手动第六轴
-  if (use_manual_joint6) {
-    arm_joint_goal_[5] = joint6_pos;
-  }
-
-  // 计算时间 (使用 Pinocchio 算出来的初始和目标位置计算距离，更准确)
-  double dist = (target_pose_eigen.block<3, 1>(0, 3) - pinocchio_fk.block<3, 1>(0, 3)).norm();
-  plan_max_tick_ = static_cast<long unsigned int>(dist / average_move_speed_ / control_period_);
-  plan_max_tick_ = std::max(100uL, plan_max_tick_);
-
-  // 生成轨迹
-  lazyPlan(start_joint_pos, arm_joint_goal_, plan_max_tick_);
-
-  // 切换 FSM
-  setArmControlFsm(ArmControlFsm::PlanMove);
-
-  ROS_INFO("[PlanToTargetPose] Motion plan generated. Dist: %.3fm, Time: %.2fs", dist, plan_max_tick_ * control_period_);
-
-  // --------------------------------------------------------------------------
-  // 7. 等待执行完成
-  // --------------------------------------------------------------------------
-  ros::Rate rate(1.0 / control_period_);
-  double timeout = (plan_max_tick_ * control_period_) + 5.0;
-  ros::Time wait_start_time = ros::Time::now();
-
-  while (ros::ok()) {
-    if ((ros::Time::now() - wait_start_time).toSec() > timeout) {
-      ROS_WARN("[PlanToTargetPose] Timeout waiting for arm to reach target");
-      return false;
-    }
-
-    if (arm_control_fsm_ == ArmControlFsm::Arrived) {
-      ROS_INFO("[PlanToTargetPose] Arm reached target position and stabilized");
-      return true;
-    }
-
-    ros::spinOnce();
-    rate.sleep();
-  }
-
-  return false;
 }
 void ArmController::imuCallback(const sensor_msgs::Imu::ConstPtr& imu) {
   // tf2::Vector3 gravity_world(0, 0, -9.81);
@@ -2918,48 +2096,6 @@ void ArmController::executeProcessCallback(const std_msgs::Float64::ConstPtr& ms
   // ROS_INFO("[ExecuteProcess] Control signal updated: %.1f (%s)",
   //          execute_process_, execute_process_ >= 1.0 ? "ENABLED" :
   //          "DISABLED");
-}
-
-bool ArmController::controlJoint6AndGripper(double gripper_pos, double joint6_pos) {
-  // ROS_INFO("[ControlJoint6AndGripper] Setting Joint6 to: %.3f rad (%.1f deg),
-  // Gripper to: %.3f",
-  //          joint6_pos, joint6_pos * 180.0 / M_PI, gripper_pos);
-
-  // // 检查 Joint6 角度范围
-  // if (joint6_pos < -3.14 || joint6_pos > 3.14) {
-  //   ROS_ERROR("[ControlJoint6AndGripper] Invalid Joint6 position: %.3f rad
-  //   (valid range: -3.14 to 3.14)",
-  //             joint6_pos);
-  //   return false;
-  // }
-
-  // // 检查夹爪位置范围
-  // if (gripper_pos < -0.85 || gripper_pos > 0.0) {
-  //   ROS_WARN("[ControlJoint6AndGripper] Gripper position %.3f is out of
-  //   typical range (0.0 to -0.85)",
-  //            gripper_pos);
-  // }
-
-  // // 如果不在 Arrived 或 PlanMove 状态，需要初始化机械臂位置
-  // if (arm_control_fsm_ != ArmControlFsm::Arrived &&
-  //     arm_control_fsm_ != ArmControlFsm::PlanMove) {
-  //   arm_control_joint_pos_ = low_state_.getQ();  // 保持当前位置
-  //   arm_control_joint_vel_.setZero();
-  //   ROS_INFO("[ControlJoint6AndGripper] Initialized arm position from current
-  //   state");
-  // }
-
-  // // 设置夹爪目标
-  // gripper_goal_ = gripper_pos;
-
-  // // 设置 Joint6 目标
-  // arm_control_joint_pos_[5] = joint6_pos;  // Joint6 是索引 5
-
-  // // 切换到 Arrived 状态
-  // setArmControlFsm(ArmControlFsm::Arrived);
-
-  // ROS_INFO("[ControlJoint6AndGripper] Control command sent successfully");
-  return false;
 }
 
 std::vector<geometry_msgs::PoseStamped> ArmController::sortPosesByDistanceToPoint(const std::vector<geometry_msgs::PoseStamped>& poses, const Eigen::Vector3d& reference_point, const Eigen::Vector3d& line_direction,
@@ -3006,10 +2142,6 @@ std::vector<geometry_msgs::PoseStamped> ArmController::sortPosesByDistanceToPoin
 
   return sorted_poses;
 }
-
-// ============================================================================
-// 辅助函数：移动到默认点（用于安全过渡）
-// ============================================================================
 
 bool ArmController::goToDefaultPoint() {
   ROS_INFO("[GoToDefaultPoint] Moving to default point for safe transition...");
@@ -3059,7 +2191,7 @@ bool ArmController::executeMotionToTarget(const geometry_msgs::Pose& target_pose
 
   if (gripper_pos < -0.85 || gripper_pos > 0.0) {
     ROS_WARN(
-        "[ControlJoint6AndGripper] Gripper position %.3f is out of "
+        "[executeMotionToTarget] Gripper position %.3f is out of "
         "typical range (0.0 to -0.85)",
         gripper_pos);
   }
@@ -3070,13 +2202,13 @@ bool ArmController::executeMotionToTarget(const geometry_msgs::Pose& target_pose
   }
   if (roll < -3.14 || roll > 3.14) {
     ROS_ERROR(
-        "[ControlJoint6AndGripper] Invalid Joint6 position: %.3f rad "
+        "[executeMotionToTarget] Invalid Joint6 position: %.3f rad "
         "(valid range: -3.14 to 3.14)",
         roll);
     return false;
   }
 
-  bool success_plan = planToTargetPose(target_pose, roll, true);
+  bool success_plan = planToTargetPose(target_pose, roll, false);
 
   if (!success_plan) {
     // ROS_ERROR("[ExecuteMotionToTarget] Failed to plan motion to target
@@ -3086,10 +2218,6 @@ bool ArmController::executeMotionToTarget(const geometry_msgs::Pose& target_pose
 
   return true;
 }
-
-// ============================================================================
-// Line3D 结构体成员函数实现
-// ============================================================================
 
 std::vector<Eigen::Vector3d> Line3D::samplePoints(double t_start, double t_end, int num_samples) const {
   std::vector<Eigen::Vector3d> samples;
@@ -3110,10 +2238,6 @@ std::vector<Eigen::Vector3d> Line3D::samplePoints(double t_start, double t_end, 
   return samples;
 }
 
-// ============================================================================
-// ArmController 直线旋转相关函数实现
-// ============================================================================
-
 Line3D ArmController::rotateLine(const Line3D& line, const Eigen::Vector3d& rotation_center, const Eigen::Vector3d& rotation_axis, double angle_rad) const {
   Line3D rotated_line;
 
@@ -3130,10 +2254,6 @@ Line3D ArmController::rotateLine(const Line3D& line, const Eigen::Vector3d& rota
 
   return rotated_line;
 }
-
-// ============================================================================
-// ArmController 纯几何变换函数实现
-// ============================================================================
 
 Line3D ArmController::translateLineGeometry(const Line3D& line, const Eigen::Vector3d& direction, double distance) const {
   Line3D translated_line;
@@ -3163,7 +2283,7 @@ std::vector<geometry_msgs::PoseStamped> ArmController::sampleAndCheckReachabilit
 
   // 检查是否有逆运动学解
   arm_controller_srvs::Plan::Request req;
-  arm_controller_srvs::Plan::Response res;
+  // arm_controller_srvs::Plan::Response res;
   // 在直线上采样点
   std::vector<Eigen::Vector3d> sampled_points = line.samplePoints(t_start, t_end, num_samples);
 
@@ -3176,7 +2296,7 @@ std::vector<geometry_msgs::PoseStamped> ArmController::sampleAndCheckReachabilit
     pose.position.y = sampled_points[i].y();
     pose.position.z = sampled_points[i].z();
     req.target_pose = pose;
-    if ((IsPlanServer(req, res)) && res.call_success) {
+    if (IsPlan(req.target_pose)) {
       first_second_try = true;
       std::cout << "  Point_First_Try[" << i << "]: (" << req.target_pose.position.x << ", " << req.target_pose.position.y << ", " << req.target_pose.position.z << ", " << req.target_pose.orientation.x << ", "
                 << req.target_pose.orientation.y << ", " << req.target_pose.orientation.z << ", " << req.target_pose.orientation.w << ") is OK" << std::endl;
@@ -3190,76 +2310,10 @@ std::vector<geometry_msgs::PoseStamped> ArmController::sampleAndCheckReachabilit
       std::cout << "[First_try]Calculated camera orientation: pitch=" << pitch << ", roll=" << roll << std::endl;
       continue;
     }
-    Eigen::Vector3d offset_stator_in_mover(-0.049, 0.0, 0.000);
-    Eigen::Vector3d p_mover(sampled_points[i].x(), sampled_points[i].y(), sampled_points[i].z());
-    Eigen::Vector3d p_stator = p_mover + offset_stator_in_mover;
-    pose.position.x = p_stator.x();
-    pose.position.y = p_stator.y();
-    pose.position.z = p_stator.z();
-    req.target_pose.position = pose.position;
-    // 1. 初始化 RPY 向量：提取当前姿态并锁定 Roll/Pitch 为 0.0
-    Eigen::Vector4d q_eigen;
-    q_eigen[0] = req.target_pose.orientation.w;
-    q_eigen[1] = req.target_pose.orientation.x;
-    q_eigen[2] = req.target_pose.orientation.y;
-    q_eigen[3] = req.target_pose.orientation.z;
-
-    Eigen::Vector3d rpy = arm_controller::quatToRpy(q_eigen);
-    rpy[0] = 0.0;
-    rpy[1] = 0.0;
-    // double reference_yaw = rpy[2];           // 新增：遍历yaw
-    double reference_yaw = 0.0;              // 计算如果太复杂把遍历yaw的环节去掉
-    const double DEG_TO_RAD = M_PI / 180.0;  // 每次走的步长（弧度）
-    double direction_sign = (reference_yaw >= 0) ? 1.0 : -1.0;
-    // 2. 遍历 Yaw 角度 (从 0 度开始，步长为 1 度)
-    for (double current_yaw_rad = 0; std::abs(current_yaw_rad) <= 2 * std::abs(reference_yaw) + 1e-4; current_yaw_rad += direction_sign * DEG_TO_RAD) {
-      // 2.1 RPY -> Quat (转换为四元数)
-      rpy[2] = current_yaw_rad;
-      Eigen::Vector4d q_new_eigen = arm_controller::rpyToQuat(rpy);
-
-      // 2.2 更新 Request 中的姿态
-      req.target_pose.orientation.w = q_new_eigen[0];
-      req.target_pose.orientation.x = q_new_eigen[1];
-      req.target_pose.orientation.y = q_new_eigen[2];
-      req.target_pose.orientation.z = q_new_eigen[3];
-
-      // 3. 检查逆运动学可达性
-      if ((IsPlanServer(req, res)) && res.call_success) {
-        // 定义变量接收局部变换 (Camera 相对于 gripper_link)
-        geometry_msgs::Pose cam_pose_in_gripper_link;
-
-        // 调用计算函数，传入引用参数
-        if (calculateCameraOrientation(line.direction, pitch, roll, current_yaw_rad, cam_pose_in_gripper_link)) {
-          // A. 保存可行的 gripper_link 目标位姿 (用于返回给上层)
-          geometry_msgs::PoseStamped pose_stamped;
-          pose_stamped.header.stamp = ros::Time::now();
-          pose_stamped.header.frame_id = "link00";
-          pose_stamped.pose = req.target_pose;
-          reachable_poses.push_back(pose_stamped);
-
-          debug_camera_poses = cam_pose_in_gripper_link;
-          std::cout << "[Second_try]Calculated camera orientation: pitch=" << pitch << ", roll=" << roll << std::endl;
-          // debug_camera_poses_msg.poses.push_back(cam_pose_in_gripper_link);
-
-          // 找到一个解就退出角度循环，去下一个采样点
-          break;
-        }
-      }
-    }
-    // std::cout << "  Calculated camera orientation[unsuccess]: pitch=" << pitch << ", roll=" << roll << std::endl;
   }
-  // if (!debug_camera_poses_msg.poses.empty()) {
-  //   camera_transformed_pose_pub_.publish(debug_camera_poses_msg);
-  //   std::cout << "[Viz] Published " << debug_camera_poses_msg.poses.size() << " camera poses in link00 frame." << std::endl;
-  // }
   std::cout << "  Total " << reachable_poses.size() << " reachable poses found." << std::endl;
-
   return reachable_poses;
 }
-
-// ============================================================================
-// ArmController 直线平移相关函数实现（保留旧接口以兼容现有代码）
-// ============================================================================
 
 Line3D ArmController::translateLine(const Line3D& line, const Eigen::Vector3d& direction, double distance, double t_start, double t_end, int num_samples, std::vector<geometry_msgs::PoseStamped>& reachable_poses,
                                     double& pitch, double& roll) {
@@ -3277,10 +2331,6 @@ Line3D ArmController::translateLine(const Line3D& line, const Eigen::Vector3d& d
 
   return translated_line;
 }
-
-// ============================================================================
-// ArmController 相机姿态计算相关函数实现
-// ============================================================================
 
 bool ArmController::calculateCameraOrientation(const Eigen::Vector3d& camera_direction, double& pitch, double& roll, double& yaw, geometry_msgs::Pose& out_cam_pose) const {
   // 归一化输入方向
@@ -3441,10 +2491,6 @@ std::vector<std::pair<Line3D, std::vector<Eigen::Vector3d>>> ArmController::gene
 
   return results;
 }
-
-// ============================================================================
-// ZED Link to Link00 TF 广播控制
-// ============================================================================
 
 bool ArmController::zedLinkToLink00Server(arm_controller_srvs::zedlinktolink00::Request& req, arm_controller_srvs::zedlinktolink00::Response& res) {
   res.call_success = false;

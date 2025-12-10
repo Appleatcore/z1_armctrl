@@ -10,22 +10,25 @@
 
 将本项目放置在宇树的unitree_legged_msgs和unitree_ros-master（https://github.com/Applepie0323/z1_env）统一目录下编译
 
-## 📋 目录 (Table of Contents)
-- [简介](#简介)
-- [环境依赖](#环境依赖)
-- [安装与编译](#安装与编译)
-- [快速开始](#快速开始)
-- [核心功能](#核心功能)
-- [ROS 接口说明](#ros-接口说明)
-- [开发日志](#开发日志)
-- [TODO](#-todo-list)
+---
+
+## 📋 目录（Table of Contents）
+
+- [项目简介](#简介)  
+- [系统要求与环境依赖](#环境依赖)  
+- [安装与编译指南](#安装与编译)  
+- [快速开始：运行仿真与任务](#快速开始)  
+- [核心功能介绍](#核心功能)  
+- [ROS 接口说明](#ros-接口说明)  
+- [开发日志与更新记录](#开发日志)  
+- [后续计划与待办事项](#todo)
 
 ## 📂 项目结构与工作区设置 (Project Structure & Workspace Setup)
 
 为了确保项目能够顺利编译和运行，请参照以下目录结构组织你的 ROS 工作空间。本项目核心代码位于 `z1_ctrl_sys` 包中。
 
 ```
-你的工作空间（例如 `unitree_ws`）的目录结构应如下所示：
+你的工作空间（例如 `unitree_ws_demo`）的目录结构应如下所示：
 unitree_ws_demo/              # 工作空间根目录 (Workspace Root)
 ├── build/
 ├── devel/

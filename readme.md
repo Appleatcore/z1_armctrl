@@ -62,7 +62,7 @@ unitree_ws_demo/              # 工作空间根目录 (Workspace Root)
     
     ```bash
     cd ~/unitree_ws_demo/src
-    git clone [YOUR_REPO_URL]
+    git clone https://github.com/Applepie0323/z1_armctrl.git
     ```
     
 2.  **安装依赖**

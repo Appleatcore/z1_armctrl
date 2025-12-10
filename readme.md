@@ -1,73 +1,162 @@
-# Z1 Arm (unitree_ros): 项目 README
+# Unitree Z1 Arm Control System (ROS)
 
-## 1. 项目里程碑 (Milestones)
+![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
+![ROS Version](https://img.shields.io/badge/ROS-Noetic-blue)
+![Platform](https://img.shields.io/badge/Platform-Ubuntu%2020.04-orange)
 
-* **[10.26]** 完善 `cross_task` 逻辑并增加 `horizon` (水平线) 辅助功能。(6965d18)
+基于 ROS 的 Unitree Z1 机械臂控制系统。使用本项目前请先阅读宇树的z1的sdk开发文档：https://support.unitree.com/home/zh/Z1_developer/z1
 
-* **[10.22]** 修复 `arm_sdk` 依赖问题。
+本项目集成了 Gazebo 仿真、Pinocchio 运动学解算、视觉目标检测（Visual Detection）以及自动抓取任务规划。
 
-* **[10.21]** "race" (竞赛) 任务开发。 
+将本项目放置在宇树的unitree_legged_msgs和unitree_ros-master（https://github.com/Applepie0323/z1_env）统一目录下编译
 
-* **[10.17]** 实机测试 (On-robot test) 成功。
+## 📋 目录 (Table of Contents)
+- [简介](#简介)
+- [环境依赖](#环境依赖)
+- [安装与编译](#安装与编译)
+- [快速开始](#快速开始)
+- [核心功能](#核心功能)
+- [ROS 接口说明](#ros-接口说明)
+- [开发日志](#开发日志)
+- [TODO](#-todo-list)
 
-* **[10.15]** 增加检测 (Detection) 功能。
+## 📂 项目结构与工作区设置 (Project Structure & Workspace Setup)
 
-* **[11.5]** 1. 完善花（十字）元素的识别（代码规范）。2. vscode上配置clangd
+为了确保项目能够顺利编译和运行，请参照以下目录结构组织你的 ROS 工作空间。本项目核心代码位于 `z1_ctrl_sys` 包中。
 
-  ![image-20251106204354948](/home/applepie/.config/Typora/typora-user-images/image-20251106204354948.png)
+```
+你的工作空间（例如 `unitree_ws`）的目录结构应如下所示：
+unitree_ws_demo/              # 工作空间根目录 (Workspace Root)
+├── build/
+├── devel/
+├── src/                      # 源码目录
+│   ├── z1_ctrl_sys/          # [核心项目] 本仓库代码
+│   │   ├── arm_controller/
+│   │   ├── arm_controller_srvs/
+│   │   ├── scripts/
+│   │   └── readme.md
+│   │
+│   ├── unitree_ros-master/   # [依赖] 仿真环境：https://github.com/Applepie0323/z1_env
+│   ├── unitree_legged_msgs/  # [依赖] 通讯消息定义
+│   └── realsense-ros/        # [可选] RealSense 相机驱动 (如不使用实机相机可忽略)
+│
+├── z1_controller/            # Unitree SDK 也就是底层的控制器
+└── z1_sdk/                   # Unitree Z1 SDK
+```
 
-* **[11.12]** 1. 完善梯字元素的识别（代码规范）。
 
-  2. sampleAndCheckReachability新增first_try：把目标点的posestamped带方向直接给机械臂执行（）
+## 📦 环境依赖 (Prerequisites)
 
-* **[11.15]** 1. 建立测试梯字的脚本。
+* **OS:** Ubuntu 20.04 LTS
+* **ROS:** Noetic Ninjemys
+* **Hardware:** Unitree Z1 Arm (Optional for simulation)
+* **Dependencies:**
+    * `unitree_legged_msgs`
+    * `pinocchio` (运动学库)
+    * `realsense2_camera` (深度相机，该项目演示demo暂时不需要)
+    * `gazebo_ros_pkgs`
 
-* **[11.19]** 1.在second_try上加入yaw的变化2.基本功能实现完成，但是偶尔出现点位太少，计算复杂度大
+## 🛠️ 安装与编译 (Installation)
 
-* **[11.25]** 功能实现完毕，下一步准备加入皮诺曹运动学库。
+1.  **克隆工作空间**
+    
+    ```bash
+    cd ~/unitree_ws_demo/src
+    git clone [YOUR_REPO_URL]
+    ```
+    
+2.  **安装依赖**
+    
+    * 见宇树文档https://support.unitree.com/home/zh/Z1_developer/z1
+    
+3.  **编译**
+    ```bash
+    cd ~/unitree_ws_demo
+    catkin_make
+    source devel/setup.bash
+    ```
 
-  * 目前存在bug：传入的模型姿态太正，会误判为第二次计算姿态方法，导致pitch赋值错误。解决办法：把sampleAndCheckReachability函数的返回值设定为自定义数组，每个点都带上pitch和roll一起传入数组
+## 🚀 快速开始 (Quick Start)
 
-## 2. 主要功能 (Features & Modifications)
+### 1. 启动仿真环境
+进入脚本目录
 
-### 2.1. 仿真与模型 (Simulation & URDF)
+```
+cd z1_ctrl_sys/scripts
+```
 
-* **模块化 (Modular):** `camera.xacro` (in `z1_description/xacro/`).
-* **集成 (Integration):** 相机 fixed to `gripperMover` link.
-* **姿态修正 (Pose):** Corrected default vertical pose (RPY offset).
-* **Gazebo 插件:** `libgazebo_ros_camera.so` (800x800, 30Hz, color image).
-* **仿真环境 (World):** Added "pipe" model for grasping.
+使用一键启动脚本加载 Gazebo 环境、控制器和 RViz：
 
-### 2.2. 核心逻辑 (Core Logic)
+```bash
+# 场景一：梯形管道任务
+./start_sim_combine.sh
 
-* **目标检测 (Detection):** Implemented detection function. (87211d3)
-* **坐标转化 (TF):** Logic for coordinate transformation and sending goals. (1240efb)
-* **重力补偿 (Gravity):** Fixed gravity compensation. (e96e813)
-* **夹爪控制 (Gripper):** Added gripper control interface. (2afaaa8)
+# 场景二：花形管道任务
+./start_sim_flower.sh
+```
 
-### 2.3. ROS API (服务与接口)
+如果脚本无法运行，你可以手动打开 **4个终端** 依次执行以下命令：
 
-* **`getgoalandangle.srv`:** "5个点" 的服务流程，用于获取目标和角度。(0a14608)
-* **`cameratolink00` srv:** 获取相机到 `link00` 的转换。 (9f826ec)
-* **姿态接口 (Pose API):** 增加了模型 Pitch/Roll/Yaw 的接口。 (a9226a5)
+- **终端 1 (环境):**
 
-## 3. 关键配置 (Key Config)
+  Bash
 
-* **机械臂基座高度 (Base Height):** **0.025m**.
-* **抓取参考点 (Grasping Reference):** Arm @ **0.1m** aligns with Pipe @ **0.025m**.
+  ```
+  cd ~/unitree_ws_demo
+  source devel/setup.bash
+  roslaunch unitree_gazebo z1_combine.launch
+  ```
 
-## 4. 后续步骤 (Next Steps)
+- **终端 2 (控制器):**
 
-* **IK (Inverse Kinematics):** Need to configure solver.
-* **任务优化 (Task):** 持续优化 `cross_task` 逻辑。
-* **可视化 (Debug):** 完善 `debug_line` 和 `horizon` 可视化调试功能。
+  Bash
 
-## 5. 开发者提示 (Developer Notes)
+  ```
+  cd ~/unitree_ws_demo/z1_controller/build
+  ./sim_ctrl
+  ```
 
-* **如需深度 (Need Depth):** Use `libgazebo_ros_openni_kinect.so` plugin.
-    * (Provides: color, depth, point cloud).
+- **终端 3 (ROS节点):**
 
-### TODO LIST
+  Bash
 
-1. 皮诺曹运动学库
-1. 把sampleAndCheckReachability函数的返回值设定为自定义数组，每个点都带上pitch和roll一起传入数组
+  ```
+  cd ~/unitree_ws_demo
+  source devel/setup.bash
+  roslaunch arm_controller arm_controller_node.launch
+  ```
+
+- **终端 4 (RViz可视化):**
+
+  Bash
+
+  ```
+  cd ~/unitree_ws_demo
+  source devel/setup.bash
+  roslaunch z1_description z1_combine_rviz.launch
+  ```
+
+### 2. 启动任务控制
+
+另启一个终端，进入脚本目录并赋予执行权限：
+
+```
+cd src/z1_ctrl_sys/scripts
+chmod +x get_goal_control_combine.py
+chmod +x get_goal_control_flower.py
+```
+
+启动执行任务脚本，请根据终端提示进行交互：
+
+```
+# 执行梯形管道抓取任务
+python3 get_goal_control_combine.py
+# 执行花形管道抓取任务
+python3 get_goal_control_flower.py
+```
+
+## 📝 TODO List
+
+* 将核心控制逻辑从线性流程重构为 FSM (有限状态机) 形式
+
+* 优化 Pinocchio IK 解算的收敛速度

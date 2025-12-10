@@ -12,8 +12,6 @@ import time
 import sys
 import signal
 
-# (signal_handler, print_header, print_step, call_service 函数保持不变)
-# ... (省略了未修改的函数定义，以保持简洁) ...
 
 def signal_handler(sig, frame):
     """处理 Ctrl+C 信号"""
@@ -48,7 +46,7 @@ def call_service(service_name, service_type, request=None):
     except Exception as e:
         print(f"✗ 服务调用失败: {e}")
         return False, None
-
+    
 def wait_for_enter(point_name):
     """等待用户按下回车键"""
     print(f"\n>>> 准备执行点: {point_name}")
@@ -93,7 +91,7 @@ def execute_point_by_name(point_name, points_dict, service_name):
     
     if not wait_for_enter(point_name):
         return False
-    
+
     # 3. 构建请求
     plan_request = planandgrippercontrol._request_class()
     plan_request.target_pose = pose

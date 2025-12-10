@@ -7,12 +7,11 @@ import rospy
 from geometry_msgs.msg import PoseStamped, Pose
 from std_srvs.srv import Trigger
 from arm_controller_srvs.srv import crossgetgoalandangle, planandgrippercontrol, PlanToDefault, BackToHome
+from tf.transformations import quaternion_from_euler
 import time
 import sys
 import signal
 
-# (signal_handler, print_header, print_step, call_service 函数保持不变)
-# ... (省略了未修改的函数定义，以保持简洁) ...
 
 def signal_handler(sig, frame):
     """处理 Ctrl+C 信号"""
@@ -107,8 +106,8 @@ def execute_point_by_name(point_name, points_dict, service_name):
     
     if success and plan_response.call_success:
         print(f"✓ 点 {point_name} 执行成功")
-        print("...等待 2 秒...")
-        rospy.sleep(2.0) # 成功后暂停
+        # print("...等待 2 秒...")
+        # rospy.sleep(2.0) # 成功后暂停
         return True
     else:
         print(f"✗ 点 {point_name} 执行失败")
@@ -131,9 +130,24 @@ def main():
     # ----------------------------------------------------
     # 这些值将在标定步骤中被覆盖（如果成功）
     # !! 您必须在此处填入您想要的默认值 !!
-    pos_x, pos_y, pos_z = 0.75, 0.0, 0.2
-    ori_x, ori_y, ori_z, ori_w = 0.07097, -0.69976, 0.07021, 0.70736 # 默认姿态
-    # ----------------------------------------------------
+    pos_x, pos_y, pos_z = 0.75, 0.0, 0.5
+    input_roll  = 0.2  # 示例值，请修改
+    input_pitch = -1.56   # 示例值，请修改
+    input_yaw   = 0.0  # 示例值，请修改
+    
+    print("\n" + "-" * 30)
+    print(f"正在计算 RPY 转四元数...")
+    print(f"输入 RPY (rad): [{input_roll:.5f}, {input_pitch:.5f}, {input_yaw:.5f}]")
+
+    # 3. 转化为四元数
+    # quaternion_from_euler 返回顺序通常为 [x, y, z, w]
+    q = quaternion_from_euler(input_roll, input_pitch, input_yaw)
+    
+    ori_x, ori_y, ori_z, ori_w = q[0], q[1], q[2], q[3]
+    # ori_x, ori_y, ori_z, ori_w = 0.03534, 0.03534, 0.70629, 0.70629 # 默认姿态
+
+    print(f"计算结果 Quaternion: [{ori_x:.5f}, {ori_y:.5f}, {ori_z:.5f}, {ori_w:.5f}]")
+    print("-" * 30 + "\n")
 
     # 步骤 1: 移动到默认位置
     print_step(1, total_steps, "移动到默认位置")

@@ -62,8 +62,6 @@ add_service_files(
   Plan.srv
   PlanToDefault.srv
   JoyStickControl.srv
-  GripperControl.srv
-  PlanTofivepoint.srv
   planandgrippercontrol.srv
   getgoalandangle.srv
   zedlinktolink00.srv

@@ -1,4 +1,0 @@
-float64 gripper_pos  # 夹爪目标位置: 0.0(张开) 到 -0.85(闭合)
-float64 joint6_pos   # Joint6 角度（弧度），范围: -3.14 到 3.14
----
-bool call_success

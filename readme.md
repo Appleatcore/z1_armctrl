@@ -8,7 +8,7 @@
 
 本项目集成了 Gazebo 仿真、Pinocchio 运动学解算、视觉目标检测（Visual Detection）以及自动抓取任务规划。
 
-将本项目放置在宇树的unitree_legged_msgs和unitree_ros-master（https://github.com/Applepie0323/z1_env）统一目录下编译
+将本项目放置在宇树的unitree_legged_msgs和unitree_ros-master  (https://github.com/Applepie0323/z1_env)  统一目录下编译
 
 ---
 

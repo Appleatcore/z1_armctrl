@@ -19,8 +19,8 @@ ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh), tf_listener_(
   // arm_model_ = std::make_unique<Z1ArmModel>();
   arm_model_ = arm_api_->getArmModel();
   // 修改关节限制：限制 Joint[2] 最小角度以防打到相机
-  arm_model_->setJointQMin(2, -1.9);  // Joint[2] (index 2) 最小角度 -2.0 rad (-115°)
-  ROS_INFO("Joint[3] min limit set to: -2.0 rad (-115 deg)");
+  // arm_model_->setJointQMin(2, -1.9);  // Joint[2] (index 2) 最小角度 -2.0 rad (-115°)
+  // ROS_INFO("Joint[3] min limit set to: -2.0 rad (-115 deg)");
 
   // 初始化两个广播器
   dynamic_br_ptr_ = std::make_unique<tf2_ros::TransformBroadcaster>();

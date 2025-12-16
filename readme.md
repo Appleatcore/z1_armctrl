@@ -6,7 +6,7 @@
 
 基于 ROS 的 Unitree Z1 机械臂控制系统。使用本项目前请先阅读宇树的z1的sdk开发文档：https://support.unitree.com/home/zh/Z1_developer/z1
 
-本项目集成了 Gazebo 仿真、Pinocchio 运动学解算、视觉目标检测（Visual Detection）以及自动抓取任务规划。
+本项目集成了 Gazebo 仿真、Pinocchio 运动学解算、视觉图像回调以及自动抓取任务规划。
 
 将本项目放置在宇树的unitree_legged_msgs和unitree_ros-master  (https://github.com/Applepie0323/z1_env)  统一目录下编译
 
@@ -14,14 +14,17 @@
 
 ## 📋 目录（Table of Contents）
 
-- [项目简介](#简介)  
-- [系统要求与环境依赖](#环境依赖)  
-- [安装与编译指南](#安装与编译)  
-- [快速开始：运行仿真与任务](#快速开始)  
-- [核心功能介绍](#核心功能)  
-- [ROS 接口说明](#ros-接口说明)  
-- [开发日志与更新记录](#开发日志)  
-- [后续计划与待办事项](#todo)
+1.  [📖 项目简介 (Introduction)](#简介)
+2.  [📂 项目结构与工作区 (Project Structure)](#项目结构与工作区设置-project-structure--workspace-setup)
+3.  [📦 环境与依赖 (Prerequisites)](#环境依赖-prerequisites)
+4.  [🛠️ 安装与编译 (Installation)](#安装与编译-installation)
+5.  [🚀 快速开始 (Quick Start)](#快速开始-quick-start)
+    * [启动仿真](#1-启动仿真环境)
+    * [启动任务](#2-启动任务控制)
+6.  [✨ 核心功能 (Core Features)](#核心功能)
+7.  [📡 ROS 接口 (ROS Interface)](#ros-接口说明)
+8.  [📅 更新日志 (Changelog)](#开发日志)
+9.  [📝 待办事项 (TODO)](#todo-list)
 
 ## 📂 项目结构与工作区设置 (Project Structure & Workspace Setup)
 

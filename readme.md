@@ -21,9 +21,6 @@
 5.  [🚀 快速开始 (Quick Start)](#快速开始-quick-start)
     * [启动仿真](#1-启动仿真环境)
     * [启动任务](#2-启动任务控制)
-6.  [✨ 核心功能 (Core Features)](#核心功能)
-7.  [📡 ROS 接口 (ROS Interface)](#ros-接口说明)
-8.  [📅 更新日志 (Changelog)](#开发日志)
 9.  [📝 待办事项 (TODO)](#todo-list)
 
 ## 📂 项目结构与工作区设置 (Project Structure & Workspace Setup)

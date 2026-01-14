@@ -61,23 +61,80 @@ unitree_ws_demo/              # 工作空间根目录 (Workspace Root)
 
 ## 🛠️ 安装与编译 (Installation)
 
-1.  **克隆工作空间**
-    
-    ```bash
-    cd ~/unitree_ws_demo/src
-    git clone https://github.com/Applepie0323/z1_armctrl.git
-    ```
-    
-2.  **安装依赖**
-    
-    * 见宇树文档https://support.unitree.com/home/zh/Z1_developer/z1
-    
-3.  **编译**
-    ```bash
-    cd ~/unitree_ws_demo
-    catkin_make
-    source devel/setup.bash
-    ```
+### 1. 克隆工作空间
+
+```
+cd ~/unitree_ws_demo/src
+git clone https://github.com/Applepie0323/z1_armctrl.git
+```
+
+### 2. 安装核心依赖 (关键步骤)
+
+由于 ROS Noetic 官方源缺失部分库或版本不兼容，**请严格按照以下步骤安装，否则会导致编译失败**：
+
+#### A. 安装 Pinocchio (运动学库)
+
+**注意**：官方 apt 源中没有 `ros-noetic-pinocchio`。必须使用 Robotpkg 源安装：
+
+```
+# 1. 添加 Robotpkg 源和密钥
+sudo apt update && sudo apt install -y curl lsb-release gnupg2
+curl http://robotpkg.openrobots.org/packages/debian/robotpkg.key | sudo apt-key add -
+echo "deb [arch=amd64] http://robotpkg.openrobots.org/packages/debian/pub $(lsb_release -cs) robotpkg" | sudo tee /etc/apt/sources.list.d/robotpkg.list
+sudo apt update
+
+# 2. 安装 Pinocchio (适配 Python 3.8)
+sudo apt install -y robotpkg-py38-pinocchio
+
+# 3. 配置环境变量 (建议写入 ~/.zshrc 或 ~/.bashrc)
+export PATH=/opt/openrobots/bin:$PATH
+export PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:$PKG_CONFIG_PATH
+export LD_LIBRARY_PATH=/opt/openrobots/lib:$LD_LIBRARY_PATH
+export PYTHONPATH=/opt/openrobots/lib/python3.8/site-packages:$PYTHONPATH
+export CMAKE_PREFIX_PATH=/opt/openrobots:$CMAKE_PREFIX_PATH
+```
+
+#### B. 安装其他系统依赖
+
+解决 `moveit_visual_tools` 缺失和 `pybind11.h` 找不到的问题：
+
+```
+# 安装 MoveIt 可视化工具 (注意不是 rviz_visual_tools)
+sudo apt install ros-noetic-moveit-visual-tools
+
+# 安装 Pybind11 开发库
+sudo apt install ros-noetic-pybind11-catkin pybind11-dev
+```
+
+### 3. 编译工作空间
+
+```
+cd ~/unitree_ws_demo
+catkin_make
+source devel/setup.bash
+```
+
+## ❓ 常见编译问题 (Troubleshooting)
+
+**Q1: 编译时报错 `Could not find a package configuration file provided by "realsense2_camera"`**
+
+- **原因**: 缺少 RealSense 驱动依赖，但如果不使用实体相机，可以跳过编译。
+
+- **解决**: 在相关包目录下创建 `CATKIN_IGNORE` 文件以忽略编译。
+
+  ```
+  # 进入报错的包目录 (例如 realsense-ros)
+  cd src/realsense-ros
+  touch CATKIN_IGNORE
+  ```
+
+**Q2: 报错 `fatal error: pybind11/pybind11.h: No such file`**
+
+- **解决**: 请确保执行了上述安装步骤中的 `sudo apt install pybind11-dev`，并且建议删除 `build/` 和 `devel/` 文件夹后重新编译。
+
+**Q3: 报错 `Make Error at ... find_package(moveit_visual_tools)`**
+
+- **解决**: 这是一个很容易混淆的包。请确认你安装的是 **`ros-noetic-moveit-visual-tools`**，而不是 `ros-noetic-rviz-visual-tools`。
 
 ## 🚀 快速开始 (Quick Start)
 

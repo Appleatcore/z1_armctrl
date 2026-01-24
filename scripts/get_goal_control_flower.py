@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# from iros_ros_foundationpose.srv import Reset, crossgetgoalandangle, planandgrippercontrol
+from iros_ros_foundationpose.srv import Reset
 
 import rospy
+import tf2_ros
 from geometry_msgs.msg import PoseStamped, Pose
 from std_srvs.srv import Trigger
 from arm_controller_srvs.srv import crossgetgoalandangle, planandgrippercontrol, PlanToDefault, BackToHome
+import tf2_geometry_msgs
 from tf.transformations import quaternion_from_euler
 import time
 import sys
@@ -51,11 +53,65 @@ def wait_for_enter(point_name):
     """等待用户按下回车键"""
     print(f"\n>>> 准备执行点: {point_name}")
     try:
+        # 如果嫌麻烦，可以注释掉下面这行 input，直接 return True
         input(">>> 按下 [Enter] 键开始执行此点，或按 Ctrl+C 取消...")
         return True
     except (KeyboardInterrupt, EOFError):
         print("\n\n用户取消操作")
         return False
+
+def get_tf_transform(tf_buffer, source_frame, target_frame, timeout=5.0, time_threshold=0.5):
+    """
+    获取 TF 变换，并检查数据的新鲜度。
+    只有当 TF 数据的时间戳与当前时间相差在 time_threshold 以内时，才视为有效。
+    """
+    print(f"正在监听 tf 变换 ({source_frame} -> {target_frame})，持续{timeout}秒...")
+    
+    start_time = rospy.Time.now()
+    last_valid_transform = None  # 改名：存储最后一次【有效】的变换
+    
+    while (rospy.Time.now() - start_time).to_sec() < timeout:
+        try:
+            # 1. 获取最新的变换 (Time(0) 返回缓冲区里最新的一帧，但不保证是现在的)
+            transform = tf_buffer.lookup_transform(
+                source_frame, 
+                target_frame, 
+                rospy.Time(0),
+                rospy.Duration(0.1)
+            )
+            
+            # 2. 【核心修改】计算时间差 (当前时间 - 数据时间)
+            current_time = rospy.Time.now()
+            data_time = transform.header.stamp
+            time_diff = (current_time - data_time).to_sec()
+            
+            # 3. 检查数据是否“新鲜”
+            if abs(time_diff) < time_threshold:
+                last_valid_transform = transform  # 数据有效，更新
+                
+                # 打印当前变换 (标记为有效)
+                trans = transform.transform.translation
+                rot = transform.transform.rotation
+                print(f"✓ [有效] 延迟: {time_diff:.4f}s | Stamp: {data_time.to_sec():.3f}")
+                print(f"  - Trans: [{trans.x:.3f}, {trans.y:.3f}, {trans.z:.3f}]")
+                # print(f"  - Rot:   [{rot.x:.3f}, {rot.y:.3f}, {rot.z:.3f}, {rot.w:.3f}]")
+            else:
+                # 数据过时，不更新 last_valid_transform
+                print(f"✗ [丢弃] 数据过时! 延迟: {time_diff:.4f}s > 阈值 {time_threshold}s")
+
+            rospy.sleep(0.1)  # 循环间隔
+            
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, 
+                tf2_ros.ExtrapolationException) as e:
+            print(f"警告: {e}")
+            rospy.sleep(0.1)
+            continue
+    
+    if last_valid_transform is None:
+        print("⚠ 警告: 在超时时间内未获取到任何【新鲜】的 TF 数据！")
+        return None
+    
+    return last_valid_transform
 
 def execute_point_by_name(point_name, points_dict, service_name):
     """
@@ -114,6 +170,39 @@ def execute_point_by_name(point_name, points_dict, service_name):
         print("!! 终止序列 !!") 
         return False # 执行失败，终止整个序列
     
+def execute_with_recovery(point_name, points_dict, service_name):
+    """尝试执行，如果失败则回零并重试一次"""
+    SERVICE_NAME = "/arm_controller_node/back_to_home"
+    SERVICE_TYPE = BackToHome
+    # 1. 第一次尝试
+    if execute_point_by_name(point_name, points_dict, service_name):
+        return True
+
+    # 2. 如果失败，执行回零
+    print(f"\n⚠ 警告: 点 {point_name} 首次执行失败！")
+    print(f"➜ 正在尝试: 回到 Home 点并重试...")
+
+    home_req = BackToHome._request_class()
+    home_req.back_to_home = True
+    h_succ, _ = call_service(SERVICE_NAME, SERVICE_TYPE, home_req)
+
+    if not h_succ:
+        print("✗ 严重错误: 无法回到 Home 点，放弃重试。")
+        return False
+
+    print("✓ 已回到 Home 点")
+    rospy.sleep(1.0)  # 稍微停顿一下
+
+    # 3. 第二次尝试
+    print(f"➜ 正在重试: 前往 {point_name} ...")
+    if execute_point_by_name(point_name, points_dict, service_name):
+        print(f"✓ 重试成功: 点 {point_name} 执行完成")
+        return True
+    else:
+        print(f"✗ 重试失败: 点 {point_name} 无法到达")
+        return False
+
+    
 def main():
     # 设置信号处理器
     signal.signal(signal.SIGINT, signal_handler)
@@ -122,6 +211,11 @@ def main():
     rospy.init_node('arm_control_sequence_custom', anonymous=True)
     
     print_header("机械臂控制序列脚本 (自定义流程)")
+    
+    # 创建 TF 监听器（用于坐标转换）
+    tf_buffer = tf2_ros.Buffer()
+    tf_listener = tf2_ros.TransformListener(tf_buffer)
+    rospy.sleep(1.0)  # 等待 TF 树建立
     
     total_steps = 4 
 
@@ -148,23 +242,24 @@ def main():
 
     print(f"计算结果 Quaternion: [{ori_x:.5f}, {ori_y:.5f}, {ori_z:.5f}, {ori_w:.5f}]")
     print("-" * 30 + "\n")
+    # ----------------------------------------------------
 
     # 步骤 1: 移动到默认位置
-    print_step(1, total_steps, "移动到默认位置")
+    # print_step(1, total_steps, "移动到默认位置")
     
-    default_request = PlanToDefault._request_class()
-    default_request.plan_to_default = False
+    # default_request = PlanToDefault._request_class()
+    # default_request.plan_to_default = False
     
-    success, response = call_service(
-        '/arm_controller_node/plan_to_default',
-        PlanToDefault,
-        default_request
-    )
-    if success and response.call_success:
-        print("✓ 移动到默认位置成功")
-    else:
-        print("✗ 移动到默认位置失败")
-        return 1
+    # success, response = call_service(
+    #     '/arm_controller_node/plan_to_default',
+    #     PlanToDefault,
+    #     default_request
+    # )
+    # if success and response.call_success:
+    #     print("✓ 移动到默认位置成功")
+    # else:
+    #     print("✗ 移动到默认位置失败")
+    #     return 1
     # rospy.sleep(7.0)
     
     # 步骤 2: 标定（可选）
@@ -186,8 +281,9 @@ def main():
             print("⚠ 跳过标定步骤")
             print(f"  将使用默认姿态 (Pos: x={pos_x:.3f})")
         else:  # 默认执行标定
+            # 1. 先调用标定服务
             cmd_request = Reset._request_class()
-            cmd_request.cmd = 1
+            cmd_request.cmd = 3
             success, response = call_service(
                 '/foundationpose/service',
                 Reset,
@@ -196,29 +292,46 @@ def main():
             if success and response.success:
                 print("✓ 标定成功")
                 
-                # --- [新] 尝试从 message (PoseStamped) 更新所有坐标 ---
+                # 2. 标定成功后，等待 TF 树更新
+                print("  等待 TF 树更新...")
+                rospy.sleep(2.0)
+                
+                # 3. 获取标定后的最新 TF 变换
+                transform = get_tf_transform(
+                    tf_buffer,
+                    'link00',
+                    'estimated_object',
+                    timeout=1.0
+                )
+                
+                # 4. 从 TF 变换中提取坐标
                 try:
-                    # 假设 response.message 是一个 geometry_msgs/PoseStamped
-                    print(f"  收到 PoseStamped 消息，正在解析...")
-                    
-                    pos_x = response.message.pose.position.x
-                    pos_y = response.message.pose.position.y
-                    pos_z = response.message.pose.position.z
-                    ori_x = response.message.pose.orientation.x
-                    ori_y = response.message.pose.orientation.y
-                    ori_z = response.message.pose.orientation.z
-                    ori_w = response.message.pose.orientation.w
-                    
-                    print(f"✓ 已从标定结果更新 *完整姿态*")
-                    print(f"  New Pos: x={pos_x:.3f}, y={pos_y:.3f}, z={pos_z:.3f}")
-                    print(f"  New Ori: x={ori_x:.3f}, y={ori_y:.3f}, z={ori_z:.3f}, w={ori_w:.3f}")
-                    
+                    if transform is not None:
+                        print("✓ 坐标获取完成")
+                        
+                        pos_x = transform.transform.translation.x
+                        pos_y = transform.transform.translation.y
+                        pos_z = transform.transform.translation.z
+                        ori_x = transform.transform.rotation.x
+                        ori_y = transform.transform.rotation.y
+                        ori_z = transform.transform.rotation.z
+                        ori_w = transform.transform.rotation.w
+                        
+                        print(f"✓ 已从标定结果更新 *完整姿态*")
+                        print(f"  New Pos: x={pos_x:.3f}, y={pos_y:.3f}, z={pos_z:.3f}")
+                        print(f"  New Ori: x={ori_x:.3f}, y={ori_y:.3f}, z={ori_z:.3f}, w={ori_w:.3f}")
+                    else:
+                        print("⚠ 警告：未能获取到有效的坐标数据")
+                        print("✗ 标定失败")
+                        print(f"  将使用默认姿态 (Pos: x={pos_x:.3f})")
+                        print("是否继续？ [y/n]: ", end="")
+                        continue_input = input().strip().lower()
+                        if continue_input != 'y':
+                            return 1
                 except AttributeError as e:
-                    print(f"✗ 警告: 无法解析标定消息。消息类型不是 PoseStamped？ 错误: {e}")
+                    print(f"✗ 警告: 无法解析 TF 变换。错误: {e}")
                     print(f"  将继续使用默认姿态。")
                 # --- [结束] ---
-                
-                rospy.sleep(5.0)
             else:
                 print("✗ 标定失败")
                 print(f"  将使用默认姿态 (Pos: x={pos_x:.3f})")
@@ -310,7 +423,7 @@ def main():
             print(f"\n[执行路径 {i+1}/{len(execution_path)}]: {current_point}")
             
             # 我们使用 execute_point_by_name，它会去 *字典* (planned_points) 中查找数据
-            if not execute_point_by_name(current_point, planned_points, SERVICE_PLANCONTROL):
+            if not execute_with_recovery(current_point, planned_points, SERVICE_PLANCONTROL):
                 print(f"!! 点 {current_point} 执行失败，序列终止 !!")
                 return 1 # 终止
             
@@ -324,23 +437,25 @@ def main():
                 # 规则 1: TOP1 -> MID -> TOP2
                 if current_point == "TOP1" and next_point == "TOP2":
                     print("\n!! 规则触发: TOP1 -> TOP2。正在插入 MID... !!")
-                    if not execute_point_by_name("MID", planned_points, SERVICE_PLANCONTROL):
+                    if not execute_with_recovery("MID", planned_points, SERVICE_PLANCONTROL):
                         print(f"!! 过渡点 MID 执行失败，序列终止 !!")
                         return 1 # 终止
 
                 # 规则 2: LEFT1 -> MID -> LEFT2
                 elif current_point == "LEFT1" and next_point == "LEFT2":
                     print("\n!! 规则触发: LEFT1 -> LEFT2。正在插入 MID... !!")
-                    if not execute_point_by_name("MID", planned_points, SERVICE_PLANCONTROL):
+                    if not execute_with_recovery("MID", planned_points, SERVICE_PLANCONTROL):
                         print(f"!! 过渡点 MID 执行失败，序列终止 !!")
                         return 1 # 终止
+        if not wait_for_enter("结束，回到初始位置"):
+            return False
     except (KeyboardInterrupt, EOFError):
         print("\n\n用户取消操作")
         sys.exit(0)
                 
     # 步骤 1: 定义服务名和类型
     SERVICE_NAME = "/arm_controller_node/back_to_home"
-    SERVICE_TYPE = BackToHome  # <--- 这是您导入的 Python 类型
+    SERVICE_TYPE = BackToHome  
 
     # 步骤 2: 创建请求对象 (Request)
     # 因为您的 .srv 文件有请求部分 (bool back_to_home)

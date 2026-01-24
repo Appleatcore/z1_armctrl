@@ -21,6 +21,8 @@ ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh), tf_listener_(
   // 修改关节限制：限制 Joint[2] 最小角度以防打到相机
   // arm_model_->setJointQMin(2, -1.9);  // Joint[2] (index 2) 最小角度 -2.0 rad (-115°)
   // ROS_INFO("Joint[3] min limit set to: -2.0 rad (-115 deg)");
+  // arm_model_->setJointQMax(1, 2.54);
+  // ROS_INFO("Joint[1] max limit set to: 2.54 rad (145.5 deg)");
 
   // 初始化两个广播器
   dynamic_br_ptr_ = std::make_unique<tf2_ros::TransformBroadcaster>();
@@ -122,6 +124,8 @@ ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh), tf_listener_(
       // 使用 make_unique 创建实例
       pinocchio_ik_ = std::make_unique<PinocchioIK>(urdf_path, "camera_link");  // camera_optical_frame，gripperStator，camera_link
       ROS_INFO("Pinocchio IK initialized successfully from: %s", urdf_path.c_str());
+      pinocchio_ik_->setJointLimitMax(1, 2.54);
+      ROS_INFO("Joint[1] max limit set to: 2.54 rad (145.5 deg)");
     } catch (const std::exception& e) {
       ROS_ERROR("Pinocchio Init Failed: %s", e.what());
     }
@@ -341,6 +345,11 @@ void ArmController::controlStep() {
         process_ = static_cast<double>(arm_control_tick_) / plan_max_tick_;
       }
       setControlCmd(default_kp_, default_kd_);
+      // 控制夹爪到目标位置
+      data_mutex_.lock();
+      low_cmd_.setGripperQ(gripper_goal_);
+      low_cmd_.setGripperQd(0.0);
+      data_mutex_.unlock();
       break;
     }
     case ArmControlFsm::Arrived: {
@@ -740,6 +749,8 @@ bool ArmController::back2HomeServer(arm_controller_srvs::BackToHome::Request& re
     //           << kEePoseHome_ << "\nKJointHome: " << KJointHome_
     //           << "\nPlanTicks: " << plan_max_tick_ << std::endl;
     lazyPlan(start_joint_pos, KJointHome_, plan_max_tick_);
+    // 设置夹爪复位到 Home 位置（完全打开）
+    gripper_goal_ = 0.0;  // 夹爪 Home 位置（与 planToDefaultServer 保持一致）
     setArmControlFsm(ArmControlFsm::Back2Home);
     // res.call_success = true;
   }
@@ -1979,7 +1990,7 @@ bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose, con
 
   // B. 执行 IK
   ros::Time t_start = ros::Time::now();
-  bool find_ik = pinocchio_ik_->inverseKinematics(target_pose_eigen, start_state_7d, target_state_7d, weights);
+  bool find_ik = pinocchio_ik_->inverseKinematics(target_pose_eigen, start_state_7d, target_state_7d, weights, 1000);
 
   if (!find_ik) {
     ROS_WARN("[PlanToTarget] IK Failed to find solution.");

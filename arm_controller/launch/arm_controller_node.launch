@@ -59,16 +59,29 @@
     </node>
 
     <!-- Static transform from arm to ZED camera -->
-    <!-- <group ns="arm_controller">
+    <group ns="arm_controller">
     
-        <node pkg="tf2_ros" type="static_transform_publisher" name="arm2zed"
-              args="-0.39865 0. -0.02174 0 -2.093 0 link02 zed_base"/>
-        
-        <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher">
+        <node pkg="tf2_ros" type="static_transform_publisher" name="arm_to_zed_link"
+              args="0.16 0 0.06 0 0.185 0.0 link00 zed_base"/>
+        <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="arm_demo"
+              args="0.2 0 0.1 0 0 0 aliengo link00"/> -->
+        <node pkg="tf2_ros" type="static_transform_publisher" name="zed_link_to_optical"
+              args="0 0 0.0 -1.5708 0 -1.5708 zed_base zedx_left_camera_optical_frame"/>
+        <node pkg="tf2_ros" type="static_transform_publisher" name="object_rotation_publisher"
+              args="0 0 0 0 0 -1.5708 estimated_object estimated_object_varified"/>
+        <!-- <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher">
             <remap from="/joint_states" to="joint_states"/>
-        </node>
+        </node> -->
         
-    </group> -->
+    </group>
+    <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen">
+        <param name="video_device" value="/dev/my_usb_cam" />
+        <!-- <param name="video_device" value="/dev/video12" /> -->
+        <param name="image_width" value="640" />
+        <param name="image_height" value="480" />
+        <param name="pixel_format" value="mjpeg" />
+        <param name="io_method" value="mmap"/>
+    </node>
 
     <!-- RViz visualization -->
     <!-- <node pkg="rviz" type="rviz" name="rviz" respawn="false" output="screen"

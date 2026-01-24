@@ -40,13 +40,21 @@ class PinocchioIK {
    * @param q_result 输出关节角 (VectorXd)
    * @param weights 任务空间权重 (固定为 6x1: xyz + rpy)
    */
-  bool inverseKinematics(const Eigen::Matrix4d& target_pose, const Eigen::VectorXd& q_init, Eigen::VectorXd& q_result, const Eigen::Matrix<double, 6, 1>& weights = Eigen::Matrix<double, 6, 1>::Ones(), int max_iter = 1000,
+  bool inverseKinematics(const Eigen::Matrix4d& target_pose, const Eigen::VectorXd& q_init, Eigen::VectorXd& q_result, const Eigen::Matrix<double, 6, 1>& weights = Eigen::Matrix<double, 6, 1>::Ones(), int max_iter = 500,
                          double eps = 1e-4);
 
   bool checkJointLimits(const Eigen::VectorXd& q) const;
 
   int getNumJoints() const { return model_.nq; }
   std::string getEndFrameName() const { return end_frame_name_; }
+  /**
+   * @brief 设置特定关节的限位
+   * @param joint_index 关节在 q 向量中的索引 (通常从 0 开始，0 代表关节1)
+   * @param max_val 角度 (弧度)
+   */
+  void setJointLimitMin(int joint_index, double min_val);
+
+  void setJointLimitMax(int joint_index, double max_val);
 
  private:
   pinocchio::Model model_;

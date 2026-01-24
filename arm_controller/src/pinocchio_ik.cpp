@@ -182,4 +182,30 @@ void PinocchioIK::clampToJointLimits(Eigen::VectorXd& q) const {
   }
 }
 
+void PinocchioIK::setJointLimitMin(int joint_index, double min_val) {
+  if (!is_initialized_) return;
+
+  // 安全检查：防止索引越界
+  if (joint_index < 0 || joint_index >= model_.nq) {
+    ROS_ERROR("[PinocchioIK] setJointLimit: Index %d out of bounds (nq=%d)", joint_index, model_.nq);
+    return;
+  }
+
+  // 直接修改 Pinocchio 模型内部的限位向量
+  model_.lowerPositionLimit[joint_index] = min_val;
+
+  ROS_INFO("[PinocchioIK] Updated Joint %d Min Limit to %.3f", joint_index, min_val);
+}
+
+void PinocchioIK::setJointLimitMax(int joint_index, double max_val) {
+  if (!is_initialized_) return;
+
+  if (joint_index < 0 || joint_index >= model_.nq) {
+    ROS_ERROR("[PinocchioIK] setJointLimits: Index %d out of bounds", joint_index);
+    return;
+  }
+
+  model_.upperPositionLimit[joint_index] = max_val;
+  ROS_INFO("[PinocchioIK] Updated Joint %d Max Limit to %.3f", joint_index, max_val);
+}
 }  // namespace arm_controller

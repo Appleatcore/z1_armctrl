@@ -40,7 +40,7 @@ class PinocchioIK {
    * @param q_result 输出关节角 (VectorXd)
    * @param weights 任务空间权重 (固定为 6x1: xyz + rpy)
    */
-  bool inverseKinematics(const Eigen::Matrix4d& target_pose, const Eigen::VectorXd& q_init, Eigen::VectorXd& q_result, const Eigen::Matrix<double, 6, 1>& weights = Eigen::Matrix<double, 6, 1>::Ones(), int max_iter = 500,
+  bool inverseKinematics(const Eigen::Matrix4d& target_pose, const Eigen::VectorXd& q_init, Eigen::VectorXd& q_result, const Eigen::Matrix<double, 6, 1>& weights = Eigen::Matrix<double, 6, 1>::Ones(), int max_iter = 1000,
                          double eps = 1e-4);
 
   bool checkJointLimits(const Eigen::VectorXd& q) const;

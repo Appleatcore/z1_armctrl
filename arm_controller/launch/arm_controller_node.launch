@@ -30,12 +30,12 @@
         <param name="test/line_point_roll" value="1.5708" />
         <param name="test/rotation_angle_deg" value="45.0" />
         <param name="test/sample_start" value="-0.6" />
-        <param name="test/sample_end" value="-0.05" />
+        <param name="test/sample_end" value="-0.1" />
         <param name="test/num_samples" value="10" />
         <!-- MID 线单独的采样参数 -->
 
         <param name="test/mid_sample_start" value="-0.6" />
-        <param name="test/mid_sample_end" value="-0.05" />
+        <param name="test/mid_sample_end" value="-0.1" />
         <param name="test/mid_num_samples" value="10" />
         <param name="test/mid_target_distance" value="0.20" />
         <!-- 采样参数 -->
@@ -50,7 +50,12 @@
         <param name="test/default_target_pose_orientation_y" value="0.0" />
         <param name="test/default_target_pose_orientation_z" value="0.0" />
         <param name="test/default_target_pose_orientation_w" value="1.0" />
-        <param name="test/default_joint_pos_3" value="-0.6" />
+        <param name="test/default_joint_pos_1" value="2.54" />  
+        <param name="test/default_joint_pos_2" value="-0.7" />        
+        <param name="test/default_joint_pos_3" value="-1.0" />
+        <param name="test/horizon_joint_pos_1" value="2.0" />    
+        <param name="test/horizon_joint_pos_2" value="-0.7" />    
+        <param name="test/horizon_joint_pos_3" value="-0.35" />    
         
 
         <param name="test/target_distance_for_touch" value="0.07" />
@@ -61,8 +66,10 @@
     <!-- Static transform from arm to ZED camera -->
     <group ns="arm_controller">
     
-        <node pkg="tf2_ros" type="static_transform_publisher" name="arm_to_zed_link"
-              args="0.16 0 0.06 0 0.185 0.0 link00 zed_base"/>
+        <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="arm_to_zed_link"
+              args="0.16 0 0.06 0 0.185 0.0 link00 zed_base"/> -->
+        <node pkg="tf2_ros" type="static_transform_publisher" name="arm2zed"
+              args="-0.39865 0. -0.02174 0 -2.093 0 link02 zed_base"/>
         <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="arm_demo"
               args="0.2 0 0.1 0 0 0 aliengo link00"/> -->
         <node pkg="tf2_ros" type="static_transform_publisher" name="zed_link_to_optical"
@@ -74,14 +81,13 @@
         </node> -->
         
     </group>
-    <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen">
+    <!-- <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen">
         <param name="video_device" value="/dev/my_usb_cam" />
-        <!-- <param name="video_device" value="/dev/video12" /> -->
         <param name="image_width" value="640" />
         <param name="image_height" value="480" />
         <param name="pixel_format" value="mjpeg" />
         <param name="io_method" value="mmap"/>
-    </node>
+    </node> -->
 
     <!-- RViz visualization -->
     <!-- <node pkg="rviz" type="rviz" name="rviz" respawn="false" output="screen"

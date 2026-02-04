@@ -64,7 +64,6 @@ def test_control_service():
 
     # 步骤 0: 禁用摇杆
     print("\n[步骤 0] 禁用摇杆控制")
-    input("按回车键继续...")
     rospy.sleep(1.0)
     send_stepit_command("Policy/CmdPitch/DisableJoystick")
 

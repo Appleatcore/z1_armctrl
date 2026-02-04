@@ -93,12 +93,21 @@ ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh), tf_listener_(
   }
   // 设置夹爪增益
   low_cmd_.setGripperGain(15.0, 20.0);  // 使用默认增益
+  double default_joint_pos_1 = 2.54;
+  double default_joint_pos_2 = -1.12;  
   double default_joint_pos_3 = -1.0;
+  double horizon_joint_pos_1 = 2.54;
+  double horizon_joint_pos_2 = -1.27;
+  double horizon_joint_pos_3 = -0.35;
+  nh_.param("test/horizon_joint_pos_1", horizon_joint_pos_1, 2.54);
+  nh_.param("test/horizon_joint_pos_2", horizon_joint_pos_2, -1.27);
+  nh_.param("test/horizon_joint_pos_3", horizon_joint_pos_3, -0.35);
+  nh_.param("test/default_joint_pos_1", default_joint_pos_1, 2.54);
+  nh_.param("test/default_joint_pos_2", default_joint_pos_2, -1.12);
   nh_.param("test/default_joint_pos_3", default_joint_pos_3, -1.0);
   // Set default joint position
-  arm_control_default_joint_pos_ << 0.0, 2.54, -1.12, -1.0, 0.0, 0.0;
-  arm_control_default_joint_pos_[3] = default_joint_pos_3;
-  arm_control_horizon_joint_pos_ << 0.0, 2.54, -1.12, -1.4, 0.0, 0.0;
+  arm_control_default_joint_pos_ << 0.0, default_joint_pos_1, default_joint_pos_2, default_joint_pos_3, 0.0, 0.0;
+  arm_control_horizon_joint_pos_ << 0.0, horizon_joint_pos_1, horizon_joint_pos_2, horizon_joint_pos_3, 0.0, 0.0;
   // Planning
   KJointHome_ << 0, 0, 0, 0, 0, 0;
   kEePoseHome_.setIdentity();
@@ -124,8 +133,14 @@ ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh), tf_listener_(
       // 使用 make_unique 创建实例
       pinocchio_ik_ = std::make_unique<PinocchioIK>(urdf_path, "camera_link");  // camera_optical_frame，gripperStator，camera_link
       ROS_INFO("Pinocchio IK initialized successfully from: %s", urdf_path.c_str());
-      pinocchio_ik_->setJointLimitMax(1, 2.54);
-      ROS_INFO("Joint[1] max limit set to: 2.54 rad (145.5 deg)");
+      pinocchio_ik_->setJointLimitMin(2, -1.9);// Joint[2] (index 2) 最小角度 -2.0 rad (-115°)
+      pinocchio_ik_->setJointLimitMax(1, 2.62);
+      pinocchio_ik_->setJointLimitMax(0, 1.57);
+      pinocchio_ik_->setJointLimitMin(0, -1.57);
+      ROS_INFO("Joint[0] max limit set to: 1.57 rad (90 deg)");
+      ROS_INFO("Joint[0] min limit set to: -1.57 rad (-90 deg)");
+      ROS_INFO("Joint[1] max limit set to: 2.62 rad (150 deg)");
+      ROS_INFO("Joint[2] min limit set to: -1.9 rad (-115 deg)");
     } catch (const std::exception& e) {
       ROS_ERROR("Pinocchio Init Failed: %s", e.what());
     }
@@ -802,7 +817,7 @@ bool ArmController::planToDefaultServer(arm_controller_srvs::PlanToDefault::Requ
       lazyPlan(start_joint_pos, arm_joint_goal_, plan_max_tick_);
 
       // 同时规划夹爪轨迹（从当前位置到目标位置）
-      double gripper_goal = -0.76;
+      double gripper_goal = 0.0;
       double gripper_current = low_state_.getGripperQ();
       // 可以用线性插值或者直接设置目标值
       gripper_goal_ = gripper_goal;
@@ -860,7 +875,7 @@ bool ArmController::planToHorizonServer(arm_controller_srvs::PlanToHorizon::Requ
       lazyPlan(start_joint_pos, arm_joint_goal_, plan_max_tick_);
 
       // 同时规划夹爪轨迹（从当前位置到目标位置）
-      double gripper_goal = -0.76;
+      double gripper_goal = 0.0;
       double gripper_current = low_state_.getGripperQ();
       // 可以用线性插值或者直接设置目标值
       gripper_goal_ = gripper_goal;
@@ -1990,7 +2005,7 @@ bool ArmController::planToTargetPose(const geometry_msgs::Pose& target_pose, con
 
   // B. 执行 IK
   ros::Time t_start = ros::Time::now();
-  bool find_ik = pinocchio_ik_->inverseKinematics(target_pose_eigen, start_state_7d, target_state_7d, weights, 1000);
+  bool find_ik = pinocchio_ik_->inverseKinematics(target_pose_eigen, start_state_7d, target_state_7d, weights, 2000);
 
   if (!find_ik) {
     ROS_WARN("[PlanToTarget] IK Failed to find solution.");

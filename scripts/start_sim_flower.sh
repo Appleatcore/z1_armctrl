@@ -10,13 +10,13 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # 工作空间路径
-WORKSPACE_DIR="/home/applepie/unitree_ws_demo"
+WORKSPACE_DIR="/home/applepie/unitree_ws"
 
 # 存储所有启动的进程PID
 PIDS=()
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}启动机械臂控制系统${NC}"
+echo -e "${GREEN}启动机械臂控制系统 (使用 xterm)${NC}"
 echo -e "${GREEN}========================================${NC}"
 
 # 检查工作空间是否存在
@@ -25,144 +25,118 @@ if [ ! -d "$WORKSPACE_DIR" ]; then
     exit 1
 fi
 
+# 检查是否安装了 xterm
+if ! command -v xterm &> /dev/null; then
+    echo -e "${RED}错误: 未检测到 xterm。请先安装: sudo apt install xterm${NC}"
+    exit 1
+fi
+
 # 进入工作空间
 cd "$WORKSPACE_DIR"
 
-# Source ROS环境
-# echo -e "${YELLOW}[1/5] 加载ROS环境...${NC}"
-# if [ -f devel/setup.bash ]; then
-#     source devel/setup.bash
-#     echo -e "${GREEN}已加载 devel/setup.bash${NC}"
-# elif [ -f devel/setup.zsh ]; then
-#     source devel/setup.zsh
-#     echo -e "${GREEN}已加载 devel/setup.zsh${NC}"
-# else
-#     echo -e "${RED}错误: 找不到 setup 文件${NC}"
-#     exit 1
-# fi
-
-# 启动Gazebo仿真环境
-echo -e "${YELLOW}[2/5] 启动Gazebo仿真环境...${NC}"
-gnome-terminal --tab --title="Gazebo Simulation" -- bash -c "
+# 1. 启动Gazebo仿真环境 (左上角)
+echo -e "${YELLOW}[1/4] 启动Gazebo仿真环境...${NC}"
+xterm -T "Gazebo Simulation" -geometry 80x24+0+0 -e "bash -c \"
     cd $WORKSPACE_DIR;
-    if [ -f devel/setup.bash ]; then
-        source devel/setup.bash;
-    elif [ -f devel/setup.zsh ]; then
-        source devel/setup.zsh;
-    fi
+    [ -f devel/setup.bash ] && source devel/setup.bash;
     echo '启动Gazebo仿真环境...';
-    # roslaunch unitree_gazebo z1_combine.launch;
     roslaunch unitree_gazebo z1_flower.launch;
     exec bash
-" &
+\"" &
 PIDS+=($!)
 
-# 等待Gazebo启动
 echo -e "${YELLOW}等待Gazebo启动 (10秒)...${NC}"
 sleep 10
 
-# 启动控制器
-echo -e "${YELLOW}[3/5] 启动机械臂控制器...${NC}"
-gnome-terminal --tab --title="Arm Controller" -- bash -c "
+# 2. 启动控制器 (右上角)
+echo -e "${YELLOW}[2/4] 启动机械臂控制器...${NC}"
+xterm -T "Arm Controller" -geometry 80x24+500+0 -e "bash -c \"
     cd $WORKSPACE_DIR/z1_controller/build;
-    if [ -f $WORKSPACE_DIR/devel/setup.bash ]; then
-        source $WORKSPACE_DIR/devel/setup.bash;
-    fi
+    [ -f $WORKSPACE_DIR/devel/setup.bash ] && source $WORKSPACE_DIR/devel/setup.bash;
     echo '启动机械臂控制器...';
     ./sim_ctrl;
     exec bash
-" &
+\"" &
 PIDS+=($!)
 
-# 等待控制器启动
-echo -e "${YELLOW}等待控制器启动 (5秒)...${NC}"
+echo -e "${YELLOW}等待控制器启动 (3秒)...${NC}"
 sleep 3s
 
-# 启动 arm_controller_node
-echo -e "${YELLOW}[4/5] 启动 arm_controller_node...${NC}"
-gnome-terminal --tab --title="Arm Controller Node" -- bash -c "
+# 3. 启动 arm_controller_node (左下角)
+echo -e "${YELLOW}[3/4] 启动 arm_controller_node...${NC}"
+xterm -T "Arm Controller Node" -geometry 80x24+0+450 -e "bash -c \"
     cd $WORKSPACE_DIR;
-    if [ -f devel/setup.bash ]; then
-        source devel/setup.bash;
-    elif [ -f devel/setup.zsh ]; then
-        source devel/setup.zsh;
-    fi
+    [ -f devel/setup.bash ] && source devel/setup.bash;
     echo '启动 arm_controller_node...';
     roslaunch arm_controller arm_controller_node.launch;
     exec bash
-" &
+\"" &
 PIDS+=($!)
 
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}前3个程序已启动！${NC}"
-echo -e "${GREEN}========================================${NC}"
-echo ""
-echo "已启动的程序:"
-echo "  - Gazebo仿真环境"
-echo "  - 机械臂控制器 (仿真)"
-echo "  - arm_controller_node"
-echo ""
-
-# 等待用户输入启动RViz
-echo -e "${YELLOW}[5/5] 准备启动RViz...${NC}"
-# echo -e "${YELLOW}按 Enter 键启动RViz，或按 Ctrl+C 跳过...${NC}"
-# read -r
+echo -e "${YELLOW}[4/4] 准备启动RViz...${NC}"
 sleep 3s
 
-
-# 启动RViz
+# 4. 启动RViz (右下角)
 echo -e "${YELLOW}启动RViz可视化...${NC}"
-gnome-terminal --tab --title="RViz" -- zsh -c "
+xterm -T "RViz" -geometry 80x24+500+450 -e "bash -c \"
     cd $WORKSPACE_DIR;
-    if [ -f devel/setup.zsh ]; then
-        source devel/setup.zsh;
-    fi
+    [ -f devel/setup.bash ] && source devel/setup.bash;
     echo '启动RViz...';
-    # roslaunch z1_description z1_combine_rviz.launch;
     roslaunch z1_description z1_flower_rviz.launch;
-    exec zsh
-" &
+    exec bash
+\"" &
 PIDS+=($!)
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}所有程序已启动！${NC}"
+echo -e "${GREEN}所有程序已通过 xterm 启动！${NC}"
 echo -e "${GREEN}========================================${NC}"
-echo ""
-echo "已启动的程序:"
-echo "  - Gazebo仿真环境"
-echo "  - 机械臂控制器 (仿真)"
-echo "  - arm_controller_node"
-echo "  - RViz可视化"
-echo ""
 echo -e "${RED}按 Ctrl+C 一键退出所有程序${NC}"
 echo ""
 
 # 捕获Ctrl+C信号，退出所有程序
+# 捕获Ctrl+C信号，退出所有程序
 cleanup() {
-    echo -e "\n${YELLOW}正在关闭所有程序...${NC}"
+    echo -e "\n${YELLOW}正在清理 ROS 进程环境...${NC}"
     
-    # 关闭所有相关进程
+    # 1. 尝试使用 ROS 自带工具优雅关闭所有节点
+    # 这会通知所有节点进行正常的析构流程
+    rosnode kill -a 2>/dev/null
+    sleep 1
+
+    # 2. 关闭仿真器核心
+    echo -e "${YELLOW}清理仿真组件...${NC}"
     killall -9 gzserver gzclient 2>/dev/null
-    killall -9 sim_ctrl 2>/dev/null
     killall -9 rviz 2>/dev/null
+    killall -9 sim_ctrl 2>/dev/null
+
+    # 3. 强力清理所有包含特定关键字的 python/cpp 进程
+    # 这样可以抓取那些由 roslaunch 启动但名称不直接包含 .launch 的隐藏进程
+    echo -e "${YELLOW}深度清理节点进程...${NC}"
+    pkill -9 -f "unitree" 2>/dev/null
+    pkill -9 -f "arm_controller" 2>/dev/null
+    pkill -9 -f "z1_" 2>/dev/null
     
-    # 关闭ROS节点
-    pkill -9 -f "arm_controller_node" 2>/dev/null
-    pkill -9 -f "z1_flower.launch" 2>/dev/null
-    pkill -9 -f "z1_flower_rviz.launch" 2>/dev/null
-    
-    # 关闭终端窗口
-    kill ${PIDS[@]} 2>/dev/null
-    
-    # 注意: 不关闭 roscore/rosmaster，因为用户可能在独立终端中运行
-    
-    echo -e "${GREEN}所有程序已关闭 (保留roscore)${NC}"
+    # 4. 关闭所有启动的终端 (xterm)
+    # 使用进程组 ID (PGID) 杀掉整个树比单个 PID 更有效
+    for pid in "${PIDS[@]}"; do
+        # 杀掉该进程及其所有子进程
+        pkill -TERM -P "$pid" 2>/dev/null
+        kill -9 "$pid" 2>/dev/null
+    done
+
+    # 5. 【可选】彻底重置 ROS 核心 (根据需要决定是否启用)
+    # 如果你发现下次启动提示 "master already running"，请取消下面两行的注释
+    # echo -e "${YELLOW}重置 rosmaster...${NC}"
+    # pkill -9 -f rosmaster 2>/dev/null
+    # pkill -9 -f roscore 2>/dev/null
+
+    echo -e "${GREEN}所有程序已彻底清理${NC}"
     exit 0
 }
 
 trap cleanup INT
 
-# 保持脚本运行，等待Ctrl+C
+# 保持脚本运行
 while true; do
     sleep 1
 done

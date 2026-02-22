@@ -14,10 +14,138 @@ from arm_controller_srvs.srv import (
     BackToHome,
 )
 import tf2_geometry_msgs
-from tf.transformations import quaternion_from_euler
+from tf.transformations import quaternion_from_euler, euler_from_quaternion
 import time
 import sys
 import signal
+import numpy as np
+
+
+import numpy as np
+
+# 配置参数
+CALIBRATION_SAMPLES = 5  # 标定时采集的样本数量（用于均值滤波）
+CALIBRATION_SAMPLE_INTERVAL = 0.5  # 采样间隔（秒）
+
+
+def quaternion_average(quaternions):
+    """
+    计算多个四元数的平均值
+    使用 Markley 等人提出的方法
+
+    参数:
+        quaternions: list of tuples (x, y, z, w)
+
+    返回:
+        tuple: 平均四元数 (x, y, z, w)
+    """
+    if not quaternions:
+        return (0, 0, 0, 1)
+
+    # 将四元数列表转换为 numpy 数组
+    Q = np.array(quaternions)
+
+    # 构建 4x4 矩阵 M
+    M = np.zeros((4, 4))
+    for q in Q:
+        q = np.array([q[3], q[0], q[1], q[2]])  # 转换为 (w, x, y, z) 格式
+        M += np.outer(q, q)
+
+    M = M / len(Q)
+
+    # 计算特征值和特征向量
+    eigenvalues, eigenvectors = np.linalg.eig(M)
+
+    # 选择最大特征值对应的特征向量
+    max_eigenvector = eigenvectors[:, np.argmax(eigenvalues)]
+
+    # 返回格式为 (x, y, z, w)
+    return (
+        max_eigenvector[1],
+        max_eigenvector[2],
+        max_eigenvector[3],
+        max_eigenvector[0],
+    )
+
+
+def collect_calibration_samples(
+    tf_buffer, source_frame, target_frame, num_samples=5, interval=0.5
+):
+    """
+    采集多个标定样本并进行均值滤波
+
+    参数:
+        tf_buffer: TF2 缓冲区
+        source_frame: 源坐标系
+        target_frame: 目标坐标系
+        num_samples: 采集样本数量
+        interval: 采样间隔（秒）
+
+    返回:
+        tuple: (pos_x, pos_y, pos_z, ori_x, ori_y, ori_z, ori_w) 或 None
+    """
+    print(f"\n正在采集 {num_samples} 个标定样本...")
+
+    positions = []
+    orientations = []
+
+    for i in range(num_samples):
+        try:
+            # 获取 TF 变换
+            transform = tf_buffer.lookup_transform(
+                source_frame, target_frame, rospy.Time(0), rospy.Duration(1.0)
+            )
+
+            # 提取位置
+            pos = transform.transform.translation
+            positions.append([pos.x, pos.y, pos.z])
+
+            # 提取姿态（四元数）
+            ori = transform.transform.rotation
+            orientations.append((ori.x, ori.y, ori.z, ori.w))
+
+            print(
+                f"  样本 {i+1}/{num_samples}: 位置=[{pos.x:.4f}, {pos.y:.4f}, {pos.z:.4f}]"
+            )
+
+            # 等待采样间隔
+            if i < num_samples - 1:
+                rospy.sleep(interval)
+
+        except (
+            tf2_ros.LookupException,
+            tf2_ros.ConnectivityException,
+            tf2_ros.ExtrapolationException,
+        ) as e:
+            print(f"  ⚠ 样本 {i+1} 采集失败: {e}")
+            continue
+
+    # 检查是否采集到足够的样本
+    if len(positions) < num_samples / 2:
+        print(f"✗ 采集样本不足（仅 {len(positions)}/{num_samples}），标定失败")
+        return None
+
+    # 计算位置均值
+    positions_array = np.array(positions)
+    pos_mean = np.mean(positions_array, axis=0)
+    pos_std = np.std(positions_array, axis=0)
+
+    # 计算四元数平均值
+    ori_mean = quaternion_average(orientations)
+
+    print(f"\n✓ 采集完成！共 {len(positions)} 个有效样本")
+    print(f"  位置均值: [{pos_mean[0]:.6f}, {pos_mean[1]:.6f}, {pos_mean[2]:.6f}]")
+    print(f"  位置标准差: [{pos_std[0]:.6f}, {pos_std[1]:.6f}, {pos_std[2]:.6f}]")
+
+    return (
+        pos_mean[0],
+        pos_mean[1],
+        pos_mean[2],
+        ori_mean[0],
+        ori_mean[1],
+        ori_mean[2],
+        ori_mean[3],
+    )
 
 
 def signal_handler(sig, frame):
@@ -190,6 +318,39 @@ def execute_point_by_name(point_name, points_dict, service_name):
         return False  # 执行失败，终止整个序列
 
 
+def execute_with_recovery(point_name, points_dict, service_name):
+    """尝试执行，如果失败则调用default服务并重试一次"""
+    # 1. 第一次尝试
+    if execute_point_by_name(point_name, points_dict, service_name):
+        return True
+
+    # 2. 如果失败，调用default服务
+    print(f"\n⚠ 警告: 点 {point_name} 首次执行失败！")
+    print(f"➜ 正在尝试: 调用 plan_to_default 服务并重试...")
+
+    SERVICE_NAME = "/arm_controller_node/plan_to_default"
+    SERVICE_TYPE = PlanToDefault
+    default_req = PlanToDefault._request_class()
+    default_req.plan_to_default = True
+    h_succ, response = call_service(SERVICE_NAME, SERVICE_TYPE, default_req)
+
+    if not h_succ or not response.call_success:
+        print("✗ 严重错误: plan_to_default 服务调用失败，放弃重试。")
+        return False
+
+    print("✓ plan_to_default 服务调用成功")
+    rospy.sleep(1.0)
+
+    # 3. 第二次尝试
+    print(f"➜ 正在重试: 前往 {point_name} ...")
+    if execute_point_by_name(point_name, points_dict, service_name):
+        print(f"✓ 重试成功: 点 {point_name} 执行完成")
+        return True
+    else:
+        print(f"✗ 重试失败: 点 {point_name} 无法到达")
+        return False
+
+
 def main():
     # 设置信号处理器
     signal.signal(signal.SIGINT, signal_handler)
@@ -282,28 +443,71 @@ def main():
                     print("  等待 TF 树更新...")
                     rospy.sleep(2.0)
 
-                    # 3. 获取标定后的最新 TF 变换
-                    transform = get_tf_transform(
-                        tf_buffer, 'link00', 'estimated_object_varified', timeout=1.0
+                    # 3. 采集多个样本并进行均值滤波
+                    calibration_result = collect_calibration_samples(
+                        tf_buffer,
+                        'link00',
+                        'estimated_object_varified',
+                        num_samples=CALIBRATION_SAMPLES,
+                        interval=CALIBRATION_SAMPLE_INTERVAL,
                     )
 
-                    # 4. 从 TF 变换中提取坐标
+                    # 4. 从滤波结果中提取坐标
                     try:
-                        if transform is not None:
-                            print("✓ 坐标获取完成")
-                            
-                            pos_x = transform.transform.translation.x
-                            pos_y = transform.transform.translation.y
-                            pos_z = transform.transform.translation.z
-                            ori_x = transform.transform.rotation.x
-                            ori_y = transform.transform.rotation.y
-                            ori_z = transform.transform.rotation.z
-                            ori_w = transform.transform.rotation.w
-                            
-                            print(f"✓ 已从标定结果更新 *完整姿态*")
-                            print(f"  New Pos: x={pos_x:.3f}, y={pos_y:.3f}, z={pos_z:.3f}")
-                            print(f"  New Ori: x={ori_x:.3f}, y={ori_y:.3f}, z={ori_z:.3f}, w={ori_w:.3f}")
-                            calibration_done = True
+                        if calibration_result is not None:
+                            pos_x, pos_y, pos_z, ori_x, ori_y, ori_z, ori_w = (
+                                calibration_result
+                            )
+
+                            print("✓ 坐标滤波完成")
+
+                            # 将四元数转换为欧拉角 (roll, pitch, yaw)
+                            quaternion = (ori_x, ori_y, ori_z, ori_w)
+                            roll, pitch, yaw = euler_from_quaternion(quaternion)
+
+                            # 显示转换后的坐标
+                            print("\n" + "=" * 60)
+                            print("✓ 标定成功！获取到的坐标如下：")
+                            print("=" * 60)
+                            print(f"  位置 (Position):")
+                            print(f"    x = {pos_x:.6f} m")
+                            print(f"    y = {pos_y:.6f} m")
+                            print(f"    z = {pos_z:.6f} m")
+                            print(f"\n  姿态 (Orientation - Quaternion):")
+                            print(f"    x = {ori_x:.6f}")
+                            print(f"    y = {ori_y:.6f}")
+                            print(f"    z = {ori_z:.6f}")
+                            print(f"    w = {ori_w:.6f}")
+                            print(f"\n  姿态 (Orientation - Euler Angles):")
+                            print(
+                                f"    roll  = {roll:.6f} rad  ({roll*180/3.14159:.2f}°)"
+                            )
+                            print(
+                                f"    pitch = {pitch:.6f} rad  ({pitch*180/3.14159:.2f}°)"
+                            )
+                            print(
+                                f"    yaw   = {yaw:.6f} rad  ({yaw*180/3.14159:.2f}°)"
+                            )
+                            print("=" * 60)
+
+                            # 等待用户确认
+                            confirm_input = (
+                                input(
+                                    "\n>>> 请确认以上坐标是否正确，按 [Enter] 继续，按 [r] 重新标定，按 [q] 退出: "
+                                )
+                                .strip()
+                                .lower()
+                            )
+                            if confirm_input == 'q':
+                                print("用户选择退出")
+                                return 0
+                            elif confirm_input == 'r':
+                                print("\n正在重新标定...")
+                                continue  # 重新标定
+                            else:
+                                # 用户确认，继续执行
+                                print(f"✓ 已从标定结果更新 *完整姿态*")
+                                calibration_done = True
                         else:
                             print("✗ 错误：未能获取到有效的坐标数据（超时）")
                             print("程序退出")
@@ -430,8 +634,8 @@ def main():
             # 1. 执行当前点
             print(f"\n[执行路径 {i+1}/{len(execution_path)}]: {current_point}")
 
-            # 我们使用 execute_point_by_name，它会去 *字典* (planned_points) 中查找数据
-            if not execute_point_by_name(
+            # 我们使用 execute_with_recovery，它会去 *字典* (planned_points) 中查找数据
+            if not execute_with_recovery(
                 current_point, planned_points, SERVICE_PLANCONTROL
             ):
                 print(f"!! 点 {current_point} 执行失败，序列终止 !!")
@@ -447,7 +651,7 @@ def main():
                 # 规则 1: OUT1 -> MID -> OUT2
                 if current_point == "OUT1" and next_point == "OUT2":
                     print("\n!! 规则触发: OUT1 -> OUT2。正在插入 MID... !!")
-                    if not execute_point_by_name(
+                    if not execute_with_recovery(
                         "MID", planned_points, SERVICE_PLANCONTROL
                     ):
                         print(f"!! 过渡点 MID 执行失败，序列终止 !!")
@@ -456,7 +660,7 @@ def main():
                 # 规则 2: OUT1 -> MID -> HALF2
                 if current_point == "OUT1" and next_point == "HALF2":
                     print("\n!! 规则触发: OUT1 -> HALF2。正在插入 MID... !!")
-                    if not execute_point_by_name(
+                    if not execute_with_recovery(
                         "MID", planned_points, SERVICE_PLANCONTROL
                     ):
                         print(f"!! 过渡点 MID 执行失败，序列终止 !!")
@@ -465,7 +669,7 @@ def main():
                 # 规则 3: HALF1 -> MID -> HALF2
                 if current_point == "HALF1" and next_point == "HALF2":
                     print("\n!! 规则触发: HALF1 -> HALF2。正在插入 MID... !!")
-                    if not execute_point_by_name(
+                    if not execute_with_recovery(
                         "MID", planned_points, SERVICE_PLANCONTROL
                     ):
                         print(f"!! 过渡点 MID 执行失败，序列终止 !!")

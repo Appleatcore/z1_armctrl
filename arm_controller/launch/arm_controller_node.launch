@@ -29,12 +29,12 @@
         <param name="test/line_point_yaw" value="0.0" />
         <param name="test/line_point_roll" value="1.5708" />
         <param name="test/rotation_angle_deg" value="45.0" />
-        <param name="test/sample_start" value="-0.6" />
+        <param name="test/sample_start" value="-0.4" />
         <param name="test/sample_end" value="-0.1" />
         <param name="test/num_samples" value="10" />
         <!-- MID 线单独的采样参数 -->
 
-        <param name="test/mid_sample_start" value="-0.6" />
+        <param name="test/mid_sample_start" value="-0.4" />
         <param name="test/mid_sample_end" value="-0.1" />
         <param name="test/mid_num_samples" value="10" />
         <param name="test/mid_target_distance" value="0.20" />
@@ -56,7 +56,9 @@
         <param name="test/horizon_joint_pos_1" value="2.0" />    
         <param name="test/horizon_joint_pos_2" value="-0.7" />    
         <param name="test/horizon_joint_pos_3" value="-0.35" />    
-        
+        <param name="test/horizon_height_joint_pos_1" value="2.0" />
+        <param name="test/horizon_height_joint_pos_2" value="-0.7" />
+        <param name="test/horizon_height_joint_pos_3" value="-0.35" />
 
         <param name="test/target_distance_for_touch" value="0.07" />
 

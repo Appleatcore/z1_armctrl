@@ -13,20 +13,143 @@ from arm_controller_srvs.srv import (
     crossgetgoalandangle,
     planandgrippercontrol,
     PlanToHorizon,
-    PlanToDefault,
+    PlanToHorizonHeight,
     BackToHome,
 )
 import tf2_geometry_msgs
-from tf.transformations import quaternion_from_euler
+from tf.transformations import quaternion_from_euler, euler_from_quaternion
 import time
 import sys
 import signal
+import numpy as np
 
 ENABLE_DOG_CONTROL = False  # True: 控制狗的姿态; False: 仅运行机械臂逻辑
 if ENABLE_DOG_CONTROL:
     from stepit_ros_msgs.srv import Control, ControlRequest
 
 ENABLE_AUTO_CONTROL = False  # True: 全自动控制; False: 手动确认
+CALIBRATION_SAMPLES = 5  # 标定时采集的样本数量（用于均值滤波）
+CALIBRATION_SAMPLE_INTERVAL = 0.5  # 采样间隔（秒）
+
+
+def quaternion_average(quaternions):
+    """
+    计算多个四元数的平均值
+    使用 Markley 等人提出的方法
+
+    参数:
+        quaternions: list of tuples (x, y, z, w)
+
+    返回:
+        tuple: 平均四元数 (x, y, z, w)
+    """
+    if not quaternions:
+        return (0, 0, 0, 1)
+
+    # 将四元数列表转换为 numpy 数组
+    Q = np.array(quaternions)
+
+    # 构建 4x4 矩阵 M
+    M = np.zeros((4, 4))
+    for q in Q:
+        q = np.array([q[3], q[0], q[1], q[2]])  # 转换为 (w, x, y, z) 格式
+        M += np.outer(q, q)
+
+    M = M / len(Q)
+
+    # 计算特征值和特征向量
+    eigenvalues, eigenvectors = np.linalg.eig(M)
+
+    # 选择最大特征值对应的特征向量
+    max_eigenvector = eigenvectors[:, np.argmax(eigenvalues)]
+
+    # 返回格式为 (x, y, z, w)
+    return (
+        max_eigenvector[1],
+        max_eigenvector[2],
+        max_eigenvector[3],
+        max_eigenvector[0],
+    )
+
+
+def collect_calibration_samples(
+    tf_buffer, source_frame, target_frame, num_samples=5, interval=0.5
+):
+    """
+    采集多个标定样本并进行均值滤波
+
+    参数:
+        tf_buffer: TF2 缓冲区
+        source_frame: 源坐标系
+        target_frame: 目标坐标系
+        num_samples: 采集样本数量
+        interval: 采样间隔（秒）
+
+    返回:
+        tuple: (pos_x, pos_y, pos_z, ori_x, ori_y, ori_z, ori_w) 或 None
+    """
+    print(f"\n正在采集 {num_samples} 个标定样本...")
+
+    positions = []
+    orientations = []
+
+    for i in range(num_samples):
+        try:
+            # 获取 TF 变换
+            transform = tf_buffer.lookup_transform(
+                source_frame, target_frame, rospy.Time(0), rospy.Duration(1.0)
+            )
+
+            # 提取位置
+            pos = transform.transform.translation
+            positions.append([pos.x, pos.y, pos.z])
+
+            # 提取姿态（四元数）
+            ori = transform.transform.rotation
+            orientations.append((ori.x, ori.y, ori.z, ori.w))
+
+            print(
+                f"  样本 {i+1}/{num_samples}: 位置=[{pos.x:.4f}, {pos.y:.4f}, {pos.z:.4f}]"
+            )
+
+            # 等待采样间隔
+            if i < num_samples - 1:
+                rospy.sleep(interval)
+
+        except (
+            tf2_ros.LookupException,
+            tf2_ros.ConnectivityException,
+            tf2_ros.ExtrapolationException,
+        ) as e:
+            print(f"  ⚠ 样本 {i+1} 采集失败: {e}")
+            continue
+
+    # 检查是否采集到足够的样本
+    if len(positions) < num_samples / 2:
+        print(f"✗ 采集样本不足（仅 {len(positions)}/{num_samples}），标定失败")
+        return None
+
+    # 计算位置均值
+    positions_array = np.array(positions)
+    pos_mean = np.mean(positions_array, axis=0)
+    pos_std = np.std(positions_array, axis=0)
+
+    # 计算四元数平均值
+    ori_mean = quaternion_average(orientations)
+
+    print(f"\n✓ 采集完成！共 {len(positions)} 个有效样本")
+    print(f"  位置均值: [{pos_mean[0]:.6f}, {pos_mean[1]:.6f}, {pos_mean[2]:.6f}]")
+    print(f"  位置标准差: [{pos_std[0]:.6f}, {pos_std[1]:.6f}, {pos_std[2]:.6f}]")
+
+    return (
+        pos_mean[0],
+        pos_mean[1],
+        pos_mean[2],
+        ori_mean[0],
+        ori_mean[1],
+        ori_mean[2],
+        ori_mean[3],
+    )
 
 
 def signal_handler(sig, frame):
@@ -167,27 +290,41 @@ def execute_point_by_name(point_name, points_dict, service_name):
         return False
 
 
-def execute_with_recovery(point_name, points_dict, service_name):
-    """尝试执行，如果失败则回零并重试一次"""
-    SERVICE_NAME = "/arm_controller_node/back_to_home"
-    SERVICE_TYPE = BackToHome
+def execute_with_recovery(point_name, points_dict, service_name, loop_round):
+    """尝试执行，如果失败则根据轮次调用horizon或default服务并重试一次"""
     # 1. 第一次尝试
     if execute_point_by_name(point_name, points_dict, service_name):
         return True
 
-    # 2. 如果失败，执行回零
+    # 2. 如果失败，根据奇偶轮次选择恢复服务
     print(f"\n⚠ 警告: 点 {point_name} 首次执行失败！")
-    print(f"➜ 正在尝试: 回到 Home 点并重试...")
 
-    home_req = BackToHome._request_class()
-    home_req.back_to_home = True
-    h_succ, _ = call_service(SERVICE_NAME, SERVICE_TYPE, home_req)
+    if ENABLE_DOG_CONTROL and loop_round % 2 == 1:
+        # 奇数轮：调用 plan_to_horizon
+        SERVICE_NAME = "/arm_controller_node/plan_to_horizon"
+        SERVICE_TYPE = PlanToHorizon
+        print(f"➜ 正在尝试: 调用 plan_to_horizon 服务并重试...")
 
-    if not h_succ:
-        print("✗ 严重错误: 无法回到 Home 点，放弃重试。")
+        horizon_req = PlanToHorizon._request_class()
+        if hasattr(horizon_req, 'plan_to_horizon'):
+            horizon_req.plan_to_horizon = True
+
+        h_succ, response = call_service(SERVICE_NAME, SERVICE_TYPE, horizon_req)
+    else:
+        # 偶数轮：调用 plan_to_horizon_height
+        SERVICE_NAME = "/arm_controller_node/plan_to_horizon_height"
+        SERVICE_TYPE = PlanToHorizonHeight
+        print(f"➜ 正在尝试: 调用 plan_to_horizon_height 服务并重试...")
+
+        height_req = PlanToHorizonHeight._request_class()
+        height_req.height = 0.0
+        h_succ, response = call_service(SERVICE_NAME, SERVICE_TYPE, height_req)
+
+    if not h_succ or not response.call_success:
+        print(f"✗ 严重错误: 恢复服务调用失败，放弃重试。")
         return False
 
-    print("✓ 已回到 Home 点")
+    print("✓ 恢复服务调用成功")
     rospy.sleep(1.0)
 
     # 3. 第二次尝试
@@ -380,13 +517,15 @@ def main():
                 '/arm_controller_node/plan_to_horizon', PlanToHorizon, horizon_request
             )
         else:
-            # 偶数轮：Plan To Default
-            print(f"-> 第 {loop_round} 轮为偶数，调用: plan_to_default")
-            default_request = PlanToDefault._request_class()
-            default_request.plan_to_default = True
+            # 偶数轮：Plan To Horizon Height
+            print(f"-> 第 {loop_round} 轮为偶数，调用: plan_to_horizon_height")
+            height_request = PlanToHorizonHeight._request_class()
+            height_request.height = 0.0
 
             success, response = call_service(
-                '/arm_controller_node/plan_to_default', PlanToDefault, default_request
+                '/arm_controller_node/plan_to_horizon_height',
+                PlanToHorizonHeight,
+                height_request,
             )
 
         if success and response.call_success:
@@ -446,32 +585,81 @@ def main():
                     print("  等待 TF 树更新...")
                     rospy.sleep(2.0)
 
-                    # 3. 获取标定后的最新 TF 变换
-                    transform = get_tf_transform(
-                        tf_buffer, 'link00', 'estimated_object', timeout=3.0
+                    # 3. 采集多个样本并进行均值滤波
+                    calibration_result = collect_calibration_samples(
+                        tf_buffer,
+                        'link00',
+                        'estimated_object',
+                        num_samples=CALIBRATION_SAMPLES,
+                        interval=CALIBRATION_SAMPLE_INTERVAL,
                     )
 
-                    # 4. 从 TF 变换中提取坐标
+                    # 4. 从滤波结果中提取坐标
                     try:
-                        if transform is not None:
-                            print("✓ 坐标获取完成")
+                        if calibration_result is not None:
+                            pos_x, pos_y, pos_z, ori_x, ori_y, ori_z, ori_w = (
+                                calibration_result
+                            )
 
-                            pos_x = transform.transform.translation.x
-                            pos_y = transform.transform.translation.y
-                            pos_z = transform.transform.translation.z
-                            ori_x = transform.transform.rotation.x
-                            ori_y = transform.transform.rotation.y
-                            ori_z = transform.transform.rotation.z
-                            ori_w = transform.transform.rotation.w
+                            print("✓ 坐标滤波完成")
 
-                            print(f"✓ 已从标定结果更新 *完整姿态*")
+                            # 将四元数转换为欧拉角 (roll, pitch, yaw)
+                            quaternion = (ori_x, ori_y, ori_z, ori_w)
+                            roll, pitch, yaw = euler_from_quaternion(quaternion)
+
+                            # 显示转换后的坐标
+                            print("\n" + "=" * 60)
+                            print("✓ 标定成功！获取到的坐标如下：")
+                            print("=" * 60)
+                            print(f"  位置 (Position):")
+                            print(f"    x = {pos_x:.6f} m")
+                            print(f"    y = {pos_y:.6f} m")
+                            print(f"    z = {pos_z:.6f} m")
+                            print(f"\n  姿态 (Orientation - Quaternion):")
+                            print(f"    x = {ori_x:.6f}")
+                            print(f"    y = {ori_y:.6f}")
+                            print(f"    z = {ori_z:.6f}")
+                            print(f"    w = {ori_w:.6f}")
+                            print(f"\n  姿态 (Orientation - Euler Angles):")
                             print(
-                                f"  New Pos: x={pos_x:.3f}, y={pos_y:.3f}, z={pos_z:.3f}"
+                                f"    roll  = {roll:.6f} rad  ({roll*180/3.14159:.2f}°)"
                             )
                             print(
-                                f"  New Ori: x={ori_x:.3f}, y={ori_y:.3f}, z={ori_z:.3f}, w={ori_w:.3f}"
+                                f"    pitch = {pitch:.6f} rad  ({pitch*180/3.14159:.2f}°)"
                             )
-                            calibration_done = True
+                            print(
+                                f"    yaw   = {yaw:.6f} rad  ({yaw*180/3.14159:.2f}°)"
+                            )
+                            print("=" * 60)
+
+                            # 根据模式决定是否等待用户确认
+                            if ENABLE_AUTO_CONTROL:
+                                print("\n[自动模式] 自动使用以上坐标继续...")
+                                rospy.sleep(1.0)
+                                calibration_done = True
+                            else:
+                                # 手动模式：等待用户确认
+                                try:
+                                    confirm_input = (
+                                        input(
+                                            "\n>>> 请确认以上坐标是否正确，按 [Enter] 继续，按 [r] 重新标定，按 [q] 退出: "
+                                        )
+                                        .strip()
+                                        .lower()
+                                    )
+                                    if confirm_input == 'q':
+                                        print("用户选择退出")
+                                        return 0
+                                    elif confirm_input == 'r':
+                                        print("\n正在重新标定...")
+                                        continue  # 重新标定
+                                    else:
+                                        # 用户确认，继续执行
+                                        print(f"✓ 已从标定结果更新 *完整姿态*")
+                                        calibration_done = True
+                                except (KeyboardInterrupt, EOFError):
+                                    print("\n\n用户取消操作")
+                                    sys.exit(0)
                         else:
                             print("⚠ 警告：未能获取到有效的坐标数据")
                             print("✗ 标定失败")
@@ -610,7 +798,7 @@ def main():
 
                     # 我们使用 execute_with_recovery，它会去 *字典* (planned_points) 中查找数据
                     if not execute_with_recovery(
-                        current_point, planned_points, SERVICE_PLANCONTROL
+                        current_point, planned_points, SERVICE_PLANCONTROL, loop_round
                     ):
                         print(f"!! 点 {current_point} 执行失败，序列终止 !!")
                         continue
@@ -630,7 +818,7 @@ def main():
                         if current_point == "TOP" and next_point == "DOWN":
                             print("\n!! 规则触发: TOP -> DOWN。正在插入 MID... !!")
                             if not execute_with_recovery(
-                                "MID", planned_points, SERVICE_PLANCONTROL
+                                "MID", planned_points, SERVICE_PLANCONTROL, loop_round
                             ):
                                 print(f"!! 过渡点 MID 执行失败，序列终止 !!")
                                 return 1  # 终止
@@ -642,7 +830,7 @@ def main():
                         elif current_point == "LEFT" and next_point == "RIGHT":
                             print("\n!! 规则触发: LEFT -> RIGHT。正在插入 MID... !!")
                             if not execute_with_recovery(
-                                "MID", planned_points, SERVICE_PLANCONTROL
+                                "MID", planned_points, SERVICE_PLANCONTROL, loop_round
                             ):
                                 print(f"!! 过渡点 MID 执行失败，序列终止 !!")
                                 return 1  # 终止
@@ -686,17 +874,17 @@ def main():
             if ENABLE_DOG_CONTROL:
                 print_step(6, 6, "调整机器人姿态，准备下一轮扫描")
                 if loop_round % 2 == 1:
-                    print("\n[步骤 1] 设置高度 1.0 && 俯仰角 0.3")
+                    print("\n[步骤 1] 设置高度 1.0 && 俯仰角 0.4")
                     send_stepit_command("Policy/CmdHeight/SetHeight:1.0")
                     print("  ... 等待 1.0 秒 ...")
                     rospy.sleep(1.0)
-                    send_stepit_command("Policy/CmdPitch/SetPitch:0.3")
+                    send_stepit_command("Policy/CmdPitch/SetPitch:0.4")
                 else:
-                    print("\n[步骤 2] 设置高度 0.6 && 俯仰角 0.3")
+                    print("\n[步骤 2] 设置高度 0.6 && 俯仰角 0.4")
                     send_stepit_command("Policy/CmdHeight/SetHeight:0.6")
                     print("  ... 等待 1.0 秒 ...")
                     rospy.sleep(1.0)
-                    send_stepit_command("Policy/CmdPitch/SetPitch:0.3")
+                    send_stepit_command("Policy/CmdPitch/SetPitch:0.4")
             else:
                 print("\n[跳过] 步骤 6: 狗姿态控制已禁用。")
                 print("按回车键开始下一轮扫描... (或 Ctrl+C 退出)")

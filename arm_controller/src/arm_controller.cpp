@@ -99,15 +99,22 @@ ArmController::ArmController(const ros::NodeHandle& nh) : nh_(nh), tf_listener_(
   double horizon_joint_pos_1 = 2.54;
   double horizon_joint_pos_2 = -1.27;
   double horizon_joint_pos_3 = -0.35;
+  double horizon_height_joint_pos_1 = 2.54;
+  double horizon_height_joint_pos_2 = -1.27;
+  double horizon_height_joint_pos_3 = -0.35;
   nh_.param("test/horizon_joint_pos_1", horizon_joint_pos_1, 2.54);
   nh_.param("test/horizon_joint_pos_2", horizon_joint_pos_2, -1.27);
   nh_.param("test/horizon_joint_pos_3", horizon_joint_pos_3, -0.35);
+  nh_.param("test/horizon_height_joint_pos_1", horizon_height_joint_pos_1, 2.54);
+  nh_.param("test/horizon_height_joint_pos_2", horizon_height_joint_pos_2, -1.27);
+  nh_.param("test/horizon_height_joint_pos_3", horizon_height_joint_pos_3, -0.35);
   nh_.param("test/default_joint_pos_1", default_joint_pos_1, 2.54);
   nh_.param("test/default_joint_pos_2", default_joint_pos_2, -1.12);
   nh_.param("test/default_joint_pos_3", default_joint_pos_3, -1.0);
   // Set default joint position
   arm_control_default_joint_pos_ << 0.0, default_joint_pos_1, default_joint_pos_2, default_joint_pos_3, 0.0, 0.0;
   arm_control_horizon_joint_pos_ << 0.0, horizon_joint_pos_1, horizon_joint_pos_2, horizon_joint_pos_3, 0.0, 0.0;
+  arm_control_horizon_height_joint_pos_ << 0.0, horizon_height_joint_pos_1, horizon_height_joint_pos_2, horizon_height_joint_pos_3, 0.0, 0.0;
   // Planning
   KJointHome_ << 0, 0, 0, 0, 0, 0;
   kEePoseHome_.setIdentity();
@@ -275,6 +282,7 @@ void ArmController::initServers() {
   back2home_server_ = nh_.advertiseService("back_to_home", &ArmController::back2HomeServer, this);
   plan_to_default_server_ = nh_.advertiseService("plan_to_default", &ArmController::planToDefaultServer, this);
   plan_to_horizon_server_ = nh_.advertiseService("plan_to_horizon", &ArmController::planToHorizonServer, this);
+  plan_to_horizon_height_server_ = nh_.advertiseService("plan_to_horizon_height", &ArmController::planToHorizonHeightServer, this);
   check_pose_in_workspace_server_ = nh_.advertiseService("check_pose_in_workspace", &ArmController::isInWorkspaceServer, this);
   search_plan_server_ = nh_.advertiseService("search_plan", &ArmController::searchPlanServer, this);
   js_control_server_ = nh_.advertiseService("joy_stick_control", &ArmController::jsControlServer, this);
@@ -900,6 +908,85 @@ bool ArmController::planToHorizonServer(arm_controller_srvs::PlanToHorizon::Requ
     // 检查是否到位
     if (arm_control_fsm_ == ArmControlFsm::Arrived) {
       ROS_INFO("[PlanToDefault] Arm reached target position and stabilized");
+      res.call_success = true;
+      return true;
+    }
+
+    ros::spinOnce();
+    rate.sleep();
+  }
+  return true;
+}
+
+bool ArmController::planToHorizonHeightServer(arm_controller_srvs::PlanToHorizonHeight::Request& req, arm_controller_srvs::PlanToHorizonHeight::Response& res) {
+  res.call_success = false;
+  
+  if (arm_control_fsm_ == ArmControlFsm::Home || arm_control_fsm_ == ArmControlFsm::Arrived) {
+    Eigen::Matrix4d start_ee_pose = arm_model_->forwardKinematics(low_state_.getQ());
+    Eigen::Matrix<double, 6, 1> start_joint_pos = low_state_.getQ();
+    Eigen::Matrix<double, 6, 1> target_joint_pos;
+    
+    // 如果传入了高度参数且不为0，则使用传入的高度调整joint_pos_3
+    // 否则使用默认的 arm_control_horizon_height_joint_pos_
+    if (req.height != 0.0) {
+      // 使用传入的高度参数来调整关节位置
+      // 这里假设高度主要由 joint_pos_2 和 joint_pos_3 控制
+      // 你可以根据实际机械臂的运动学特性调整这个映射关系
+      target_joint_pos = arm_control_horizon_height_joint_pos_;
+      // 示例：简单地将高度映射到 joint_pos_3
+      // 你可能需要根据实际的运动学关系调整这个公式
+      target_joint_pos[3] = arm_control_horizon_height_joint_pos_[3] + req.height;
+      ROS_INFO("[PlanToHorizonHeight] Using custom height: %f, adjusted joint3: %f", req.height, target_joint_pos[3]);
+    } else {
+      // 使用默认配置
+      target_joint_pos = arm_control_horizon_height_joint_pos_;
+      ROS_INFO("[PlanToHorizonHeight] Using default horizon height position");
+    }
+    
+    if (arm_motor_safe_) {
+      // 检查是否已经很接近目标位置
+      if ((target_joint_pos - start_joint_pos).norm() <= 0.042) {
+        ROS_INFO("[PlanToHorizonHeight] Already at target position");
+        res.call_success = true;
+        return true;
+      }
+      
+      ee_pose_goal_ = arm_model_->forwardKinematics(target_joint_pos);
+      arm_joint_goal_ = target_joint_pos;
+      plan_max_tick_ = static_cast<long unsigned int>((ee_pose_goal_ - start_ee_pose).block<3, 1>(0, 3).norm() / average_move_speed_ / control_period_);
+      plan_max_tick_ = std::max(100uL, plan_max_tick_);
+      lazyPlan(start_joint_pos, arm_joint_goal_, plan_max_tick_);
+
+      // 同时规划夹爪轨迹（保持当前位置或设为0）
+      double gripper_goal = 0.0;
+      gripper_goal_ = gripper_goal;
+
+      setArmControlFsm(ArmControlFsm::PlanMove);
+      res.call_success = true;
+      
+      ROS_INFO("[PlanToHorizonHeight] Motion planned, max_tick: %lu", plan_max_tick_);
+    } else {
+      ROS_WARN("[PlanToHorizonHeight] Arm motor not safe, cannot execute motion");
+    }
+  } else {
+    ROS_WARN("[PlanToHorizonHeight] Arm not in Home or Arrived state, current state: %d", static_cast<int>(arm_control_fsm_));
+  }
+
+  // 等待机械臂执行到位
+  ros::Rate rate(1.0 / control_period_);
+  double timeout = (plan_max_tick_ * control_period_) + 5.0;  // 预计时间 + 5秒超时
+  ros::Time start_time = ros::Time::now();
+  while (ros::ok()) {
+    // 检查是否超时
+    if ((ros::Time::now() - start_time).toSec() > timeout) {
+      ROS_WARN("[PlanToHorizonHeight] Timeout waiting for arm to reach target position");
+      res.call_success = false;
+      return false;
+    }
+
+    // 检查是否到位
+    if (arm_control_fsm_ == ArmControlFsm::Arrived) {
+      ROS_INFO("[PlanToHorizonHeight] Arm reached target position and stabilized");
       res.call_success = true;
       return true;
     }

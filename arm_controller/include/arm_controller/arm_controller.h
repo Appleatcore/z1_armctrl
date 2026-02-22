@@ -37,6 +37,7 @@
 #include "arm_controller_srvs/Plan.h"
 #include "arm_controller_srvs/PlanToDefault.h"
 #include "arm_controller_srvs/PlanToHorizon.h"
+#include "arm_controller_srvs/PlanToHorizonHeight.h"
 #include "arm_controller_srvs/getgoalandangle.h"
 #include "arm_controller_srvs/planandgrippercontrol.h"
 #include "arm_controller_srvs/zedlinktolink00.h"
@@ -147,6 +148,7 @@ class ArmController {
   bool back2HomeServer(arm_controller_srvs::BackToHome::Request& req, arm_controller_srvs::BackToHome::Response& res);
   bool planToDefaultServer(arm_controller_srvs::PlanToDefault::Request& req, arm_controller_srvs::PlanToDefault::Response& res);
   bool planToHorizonServer(arm_controller_srvs::PlanToHorizon::Request& req, arm_controller_srvs::PlanToHorizon::Response& res);
+  bool planToHorizonHeightServer(arm_controller_srvs::PlanToHorizonHeight::Request& req, arm_controller_srvs::PlanToHorizonHeight::Response& res);
   bool jsControlServer(arm_controller_srvs::JoyStickControlRequest& req, arm_controller_srvs::JoyStickControlResponse& res);
   bool planAndGripperControlServer(arm_controller_srvs::planandgrippercontrol::Request& req, arm_controller_srvs::planandgrippercontrol::Response& res);
   bool getGoalAndAngleServer(arm_controller_srvs::getgoalandangle::Request& req, arm_controller_srvs::getgoalandangle::Response& res);
@@ -293,6 +295,7 @@ class ArmController {
   std::vector<double> default_kp_{20, 30, 30, 20, 15, 25}, default_kd_{2000, 2000, 2000, 2000, 2000, 2000};
   Eigen::Matrix<double, 6, 1> arm_control_default_joint_pos_;
   Eigen::Matrix<double, 6, 1> arm_control_horizon_joint_pos_;
+  Eigen::Matrix<double, 6, 1> arm_control_horizon_height_joint_pos_;
   // moveit planner
   // std::unique_ptr<ArmPlanner> planner_;
   // planning
@@ -364,7 +367,7 @@ class ArmController {
   std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_br_ptr_;  // 90度静态TF广播器
   geometry_msgs::PoseArray debug_camera_poses_msg;
   // server
-  ros::ServiceServer back2home_server_, check_pose_in_workspace_server_, plan_server_, search_plan_server_, rotation_search_plan_server_, plan_to_default_server_, plan_to_horizon_server_, js_control_server_,
+  ros::ServiceServer back2home_server_, check_pose_in_workspace_server_, plan_server_, search_plan_server_, rotation_search_plan_server_, plan_to_default_server_, plan_to_horizon_server_, plan_to_horizon_height_server_, js_control_server_,
       gripper_control_server_, plan_to_five_point_server_, plan_and_gripper_control_server_, get_goal_and_angle_server_, cross_get_goal_and_angle_server_, zed_link_to_link00_server_, camera_to_link00_server_;
   // action server
   // std::unique_ptr<actionlib::SimpleActionServer<arm_controller::PlanAction>>

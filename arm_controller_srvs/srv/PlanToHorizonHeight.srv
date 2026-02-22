@@ -1,0 +1,7 @@
+# 移动到指定高度的水平位置
+# 可以指定高度参数，或者使用参数服务器的默认值
+# 参数服务器: /test/horizon_height_joint_pos_1, /test/horizon_height_joint_pos_2, /test/horizon_height_joint_pos_3
+# 如果参数不存在,使用硬编码默认值
+float64 height  # 目标高度参数（可选，如果为0则使用默认值）
+---
+bool call_success

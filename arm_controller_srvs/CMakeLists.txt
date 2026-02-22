@@ -68,6 +68,7 @@ add_service_files(
   CameraToLink00.srv
   crossgetgoalandangle.srv
   PlanToHorizon.srv
+  PlanToHorizonHeight.srv
   Reset.srv
 )
 

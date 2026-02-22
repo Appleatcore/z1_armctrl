@@ -69,7 +69,7 @@ def quaternion_average(quaternions):
 
 
 def collect_calibration_samples(
-    tf_buffer, source_frame, target_frame, num_samples=5, interval=0.5
+    tf_buffer, source_frame, target_frame, num_samples=5, interval=0.5, time_threshold=0.5
 ):
     """
     采集多个标定样本并进行均值滤波
@@ -80,6 +80,7 @@ def collect_calibration_samples(
         target_frame: 目标坐标系
         num_samples: 采集样本数量
         interval: 采样间隔（秒）
+        time_threshold: 有效数据时间阈值（秒）
 
     返回:
         tuple: (pos_x, pos_y, pos_z, ori_x, ori_y, ori_z, ori_w) 或 None
@@ -96,17 +97,29 @@ def collect_calibration_samples(
                 source_frame, target_frame, rospy.Time(0), rospy.Duration(1.0)
             )
 
-            # 提取位置
-            pos = transform.transform.translation
-            positions.append([pos.x, pos.y, pos.z])
+            # 检查数据的新鲜度
+            current_time = rospy.Time.now()
+            data_time = transform.header.stamp
+            time_diff = (current_time - data_time).to_sec()
 
-            # 提取姿态（四元数）
-            ori = transform.transform.rotation
-            orientations.append((ori.x, ori.y, ori.z, ori.w))
+            # 只有当数据足够新鲜时才使用
+            if abs(time_diff) < time_threshold:
+                # 提取位置
+                pos = transform.transform.translation
+                positions.append([pos.x, pos.y, pos.z])
 
-            print(
-                f"  样本 {i+1}/{num_samples}: 位置=[{pos.x:.4f}, {pos.y:.4f}, {pos.z:.4f}]"
-            )
+                # 提取姿态（四元数）
+                ori = transform.transform.rotation
+                orientations.append((ori.x, ori.y, ori.z, ori.w))
+
+                print(
+                    f"  样本 {i+1}/{num_samples}: 位置=[{pos.x:.4f}, {pos.y:.4f}, {pos.z:.4f}], 延迟={time_diff:.4f}s"
+                )
+            else:
+                print(
+                    f"  ⚠ 样本 {i+1} 数据过时（延迟: {time_diff:.4f}s > 阈值 {time_threshold}s），跳过"
+                )
+                continue
 
             # 等待采样间隔
             if i < num_samples - 1:
